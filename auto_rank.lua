@@ -2518,6 +2518,54 @@ function QuestAssist.tryKeywordCooldownReset(tracked)
 	end
 end
 
+--- Поиск ближайшего ProximityPrompt к игроку в workspace
+local function getClosestProximityPrompt(maxDist)
+	local ch = LocalPlayer.Character
+	local pp = ch and ch.PrimaryPart
+	if not pp then return nil end
+	local best = nil
+	local bestDist = maxDist or 40
+
+	local function scan(inst)
+		if inst:IsA("ProximityPrompt") and inst.Enabled then
+			local p = inst.Parent
+			if p and p:IsA("BasePart") then
+				local d = (p.Position - pp.Position).Magnitude
+				if d < bestDist then
+					bestDist = d
+					best = inst
+				end
+			elseif p and p:IsA("Model") and p.PrimaryPart then
+				local d = (p.PrimaryPart.Position - pp.Position).Magnitude
+				if d < bestDist then
+					bestDist = d
+					best = inst
+				end
+			end
+		end
+		for _, ch in ipairs(inst:GetChildren()) do
+			scan(ch)
+		end
+	end
+
+	-- Ищем в Interact-папке спавна или глобально в Map
+	local folder = nil
+	pcall(function() folder = ZonesUtil and ZonesUtil.GetInteractFolder and ZonesUtil.GetInteractFolder("Rainbow Road") end)
+	if folder then scan(folder) end
+
+	if not best then
+		local map = workspace:FindFirstChild("Map")
+		if map then scan(map) end
+	end
+
+	if not best then
+		local things = workspace:FindFirstChild("__THINGS")
+		if things then scan(things) end
+	end
+
+	return best
+end
+
 --- Имя генератора GoalCmds «Travel To Tech» (как в ReplicatedStorage...Transitions.Travel To Tech).
 local function isTravelToTechGeneratorName(genName)
 	local g = string.lower(genName or "")
@@ -2527,7 +2575,7 @@ local function isTravelToTechGeneratorName(genName)
 		or string.find(g, "tech world", 1, true) ~= nil
 end
 
---- Как в Studio Callback Travel To Tech: GetInteractFolder("Rainbow Road") → Frame → Rocket → RocketInteract
+--- Поиск точки входа в Tech World (раньше была ракета, теперь портал). Ищем любой ProximityPrompt в Interact-папке Rainbow Road.
 local function rainbowRoadRocketInteractPart()
 	if not ZonesUtil or type(ZonesUtil.GetInteractFolder) ~= "function" then
 		return nil
@@ -2539,13 +2587,29 @@ local function rainbowRoadRocketInteractPart()
 	if not folder then
 		return nil
 	end
+	-- Ищем сначала по старым путям (Rocket / Frame -> Rocket)
 	local frame = folder:FindFirstChild("Frame")
-	local rocket = frame and frame:FindFirstChild("Rocket")
+	local rocket = frame and frame:FindFirstChild("Rocket") or folder:FindFirstChild("Rocket")
 	local ri = rocket and rocket:FindFirstChild("RocketInteract")
 	if ri and (ri:IsA("BasePart") or (ri:IsA("Model") and ri.PrimaryPart)) then
 		return ri
 	end
-	return nil
+	-- Фолбэк: ищем первый попавшийся ProximityPrompt внутри папки интерактивов Rainbow Road
+	local fallbackPart = nil
+	local function searchPP(inst)
+		if fallbackPart then return end
+		if inst:IsA("ProximityPrompt") then
+			local p = inst.Parent
+			if p and (p:IsA("BasePart") or (p:IsA("Model") and p.PrimaryPart)) then
+				fallbackPart = p
+			end
+		end
+		for _, ch in ipairs(inst:GetChildren()) do
+			searchPP(ch)
+		end
+	end
+	searchPP(folder)
+	return fallbackPart
 end
 
 --- Tech Rocket (World 1 → 2): Network.Fire("RequestTechRocket") — см. Scripts.Game.Misc "Tech Rocket" / SetupRocketInteract + Message.New.
@@ -2715,16 +2779,18 @@ local function tryQuestResolveDisplayTargets(tracked)
 
 	--- Travel To Tech: при дистанции >500 студов клиент не кладёт Target в Displays (см. Studio) — тянем к RocketInteract сами.
 	if not handledPhysical and isTravelToTechGeneratorName(genName) then
-		local ri = rainbowRoadRocketInteractPart()
-		if ri and pp then
-			local anchor = ri:IsA("BasePart") and ri or (ri:IsA("Model") and ri.PrimaryPart or nil)
-			if anchor and cfg().questTeleportToTarget and (pp.Position - anchor.Position).Magnitude >= minD then
+		local bestPrompt = getClosestProximityPrompt(150)
+		if bestPrompt and pp then
+			local anchor = bestPrompt.Parent
+			local pos = anchor:IsA("BasePart") and anchor.Position or (anchor:IsA("Model") and anchor.PrimaryPart and anchor.PrimaryPart.Position)
+			if pos and cfg().questTeleportToTarget and (pp.Position - pos).Magnitude >= minD then
 				pcall(function()
-					pp.CFrame = CFrame.new(anchor.Position + Vector3.new(0, yOff, 0))
+					pp.CFrame = CFrame.new(pos + Vector3.new(0, yOff, 0))
 				end)
-				log("quest teleport (Travel To Tech fallback) →", ri:GetFullName())
+				log("quest teleport (Travel To Tech closest prompt) →", anchor:GetFullName())
 			end
-			tryQuestTargetExecutorExtras(ri, pp, genName)
+			Exec.fireProximityPrompt(bestPrompt)
+			tryTravelWorldDirectNetworkFire(genName)
 		end
 	end
 end
@@ -4652,10 +4718,39 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 	end
 end
 
+--- Авто-клик "Yes" в диалогах (Message GUI) при перемещении
+local function tryAutoClickMessageDialogYes()
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	if not pg then return end
+	local msg = pg:FindFirstChild("Message")
+	if not msg or not msg:IsA("ScreenGui") or not msg.Enabled then return end
+	
+	local clicked = false
+	for _, d in ipairs(msg:GetDescendants()) do
+		if d:IsA("GuiButton") and d.Visible then
+			local t = string.lower(tostring(d.Name))
+			local t2 = ""
+			pcall(function()
+				if d:IsA("TextLabel") or d:IsA("TextButton") then
+					t2 = string.lower(tostring(d.Text))
+				end
+			end)
+			if t == "yes" or string.find(t2, "yes", 1, true) then
+				clicked = clickGuiButtonRobust(d) or clicked
+				if clicked then
+					log("Message dialog auto-clicked YES", d:GetFullName())
+				end
+			end
+		end
+	end
+	return clicked
+end
+
 --- Вынесено из анонимного обработчика Heartbeat — меньше локальных регистров на замыкании (лимит Luau 200).
 function AutoRankRuntimeState.autoRankHeartbeatWork()
 	pcall(ensureModulesOnHeartbeat)
 	tryDismissRebirthUi()
+	tryAutoClickMessageDialogYes()
 	tryInstallNetworkInvokeDebugHook()
 	tryInstallKickGuard()
 	patchOrbMagnet()
