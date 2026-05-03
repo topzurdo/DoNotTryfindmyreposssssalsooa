@@ -126,8 +126,8 @@ local DEFAULT = {
 	autoClickReturnToAreaButton = true,
 	returnToAreaClickInterval = 2,
 	--- Другой Experience Place (Tech World и т.д.): клиент полностью новый — после телепорта снова выполнить скрипт (UNC queue_on_teleport). Нужен crossPlaceReloadUrl (raw) или crossPlaceReloadReadfile.
-	crossPlaceAutoReload = false,
-	crossPlaceReloadUrl = "",
+	crossPlaceAutoReload = true,
+	crossPlaceReloadUrl = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/hello/.lua",
 	crossPlaceReloadReadfile = "",
 	crossPlaceReloadDelaySec = 3,
 	--- В текущей макс. зоне подтягивать персонажа к BREAKABLE_SPAWNS.Main (ZonesUtil), центр поля брейкаблов
@@ -2519,6 +2519,12 @@ local function tryQuestTargetExecutorExtras(inst, pp, genName)
 		end
 		return
 	end
+	--- Travel To Tech / Void / Fantasy: в Studio Target = часть (RocketInteract), ProximityPrompt — потомок (клавиша E).
+	local ppNested = inst:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if ppNested and ppNested:IsA("ProximityPrompt") then
+		Exec.fireProximityPrompt(ppNested)
+		log("quest ProximityPrompt∈Target", genName, ppNested:GetFullName())
+	end
 	if cfg().questUseFireClickDetector then
 		local cd = inst:FindFirstChildWhichIsA("ClickDetector", true)
 		if cd then
@@ -3309,41 +3315,42 @@ function HatchAssist.pivotForEgg(eggDir, tracked)
 	end
 end
 
-local function normZoneId(z)
-	if type(z) ~= "string" then
-		return nil
+local zonesIdMatch, playerNearZoneTeleportPoint
+do
+	local function normZoneId(z)
+		if type(z) ~= "string" then
+			return nil
+		end
+		return (string.gsub(z, "^%s*(.-)%s*$", "%1"))
 	end
-	return (string.gsub(z, "^%s*(.-)%s*$", "%1"))
-end
-
-local function zonesIdMatch(a, b)
-	local na = normZoneId(a)
-	local nb = normZoneId(b)
-	if not na or not nb then
-		return false
+	zonesIdMatch = function(a, b)
+		local na = normZoneId(a)
+		local nb = normZoneId(b)
+		if not na or not nb then
+			return false
+		end
+		return na == nb
 	end
-	return na == nb
-end
-
---- HRP рядом с клиентской точкой PERSISTENT/Teleport для зоны (без серверного Teleports_RequestTeleport).
-local function playerNearZoneTeleportPoint(zoneId, maxDist)
-	if not ZonesUtil or type(zoneId) ~= "string" then
-		return false
+	--- HRP рядом с клиентской точкой PERSISTENT/Teleport для зоны (без серверного Teleports_RequestTeleport).
+	playerNearZoneTeleportPoint = function(zoneId, maxDist)
+		if not ZonesUtil or type(zoneId) ~= "string" then
+			return false
+		end
+		local md = maxDist or cfg().teleportClientPivotNearStuds or 32
+		local cf = nil
+		pcall(function()
+			cf = ZonesUtil.GetTeleportPartLocation(zoneId)
+		end)
+		if not cf then
+			return false
+		end
+		local ch = LocalPlayer.Character
+		local pp = ch and ch.PrimaryPart
+		if not pp then
+			return false
+		end
+		return (pp.Position - cf.Position).Magnitude <= md
 	end
-	local md = maxDist or cfg().teleportClientPivotNearStuds or 32
-	local cf = nil
-	pcall(function()
-		cf = ZonesUtil.GetTeleportPartLocation(zoneId)
-	end)
-	if not cf then
-		return false
-	end
-	local ch = LocalPlayer.Character
-	local pp = ch and ch.PrimaryPart
-	if not pp then
-		return false
-	end
-	return (pp.Position - cf.Position).Magnitude <= md
 end
 
 local Teleports = {}
@@ -3550,414 +3557,210 @@ local function tryQuestEggHatchAssist(tracked, opts)
 	return true
 end
 
-local function instanceIdInMinigameList(id, list)
-	if type(id) ~= "string" or id == "" or type(list) ~= "table" then
-		return false
-	end
-	for _, v in ipairs(list) do
-		if v == id then
-			return true
+--- Минигame-хелперы внутри do — меньше local-регистров на чанке (лимит 200 Luau).
+local instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoot, tryGenericObbyFinish
+local MINIGAME_WAVE2_HANDLERS
+do
+	local function forEachDescendantDepthLimited(root, maxDepth, callback)
+		if not root or type(callback) ~= "function" then
+			return
 		end
-	end
-	return false
-end
-
---- Принудительный Leave: явный instanceIdsForceLeave или questBlockedInstanceIds, с учётом minigameAssistMode + autoplay.
-local function shouldQuestAutoLeaveInstanceId(id)
-	if type(id) ~= "string" or id == "" then
-		return false
-	end
-	local mode = cfg().minigameAssistMode or "skip"
-	local explicit = cfg().instanceIdsForceLeave
-	if type(explicit) == "table" and #explicit > 0 then
-		return instanceIdInMinigameList(id, explicit)
-	end
-	local list = cfg().questBlockedInstanceIds
-	if type(list) ~= "table" or not instanceIdInMinigameList(id, list) then
-		return false
-	end
-	if mode == "complete" and instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
-		return false
-	end
-	return true
-end
-
-local function getMinigameInstanceRoot(instanceId)
-	if type(instanceId) ~= "string" or instanceId == "" then
-		return nil
-	end
-	local things = workspace:FindFirstChild("__THINGS")
-	if not things then
-		return nil
-	end
-	local instances = things:FindFirstChild("Instances")
-	if not instances then
-		return nil
-	end
-	local folder = instances:FindFirstChild(instanceId)
-	if folder then
-		return folder
-	end
-	if InstancingCmds then
-		local m = nil
-		pcall(function()
-			m = InstancingCmds.Get and InstancingCmds.Get()
-			if not m and InstancingCmds.GetModel then
-				m = InstancingCmds.GetModel()
+		local function visit(inst, depth)
+			callback(inst, depth)
+			if depth >= maxDepth then
+				return
 			end
-		end)
-		if m then
-			return m
+			for _, ch in ipairs(inst:GetChildren()) do
+				visit(ch, depth + 1)
+			end
 		end
+		visit(root, 0)
 	end
-	return nil
-end
 
-local function forEachDescendantDepthLimited(root, maxDepth, callback)
-	if not root or type(callback) ~= "function" then
-		return
-	end
-	local function visit(inst, depth)
-		callback(inst, depth)
-		if depth >= maxDepth then
-			return
+	instanceIdInMinigameList = function(id, list)
+		if type(id) ~= "string" or id == "" or type(list) ~= "table" then
+			return false
 		end
-		for _, ch in ipairs(inst:GetChildren()) do
-			visit(ch, depth + 1)
+		for _, v in ipairs(list) do
+			if v == id then
+				return true
+			end
 		end
+		return false
 	end
-	visit(root, 0)
-end
 
-local function tryMinigameWave2Proximity(root, label)
-	local maxD = cfg().minigameWave2SearchDepth or 14
-	local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
-	local ch = LocalPlayer.Character
-	local pp = ch and ch.PrimaryPart
-	if not pp or not root then
-		return
-	end
-	local fired = 0
-	forEachDescendantDepthLimited(root, maxD, function(inst)
-		if fired >= maxP then
-			return
+	--- Принудительный Leave: явный instanceIdsForceLeave или questBlockedInstanceIds, с учётом minigameAssistMode + autoplay.
+	shouldQuestAutoLeaveInstanceId = function(id)
+		if type(id) ~= "string" or id == "" then
+			return false
 		end
-		if inst:IsA("ProximityPrompt") and inst.Enabled then
-			local parent = inst.Parent
-			if parent and parent:IsA("BasePart") then
-				local dist = (parent.Position - pp.Position).Magnitude
-				if dist <= (inst.MaxActivationDistance or 10) + 10 then
-					Exec.fireProximityPrompt(inst)
-					fired = fired + 1
+		local mode = cfg().minigameAssistMode or "skip"
+		local explicit = cfg().instanceIdsForceLeave
+		if type(explicit) == "table" and #explicit > 0 then
+			return instanceIdInMinigameList(id, explicit)
+		end
+		local list = cfg().questBlockedInstanceIds
+		if type(list) ~= "table" or not instanceIdInMinigameList(id, list) then
+			return false
+		end
+		if mode == "complete" and instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
+			return false
+		end
+		return true
+	end
+
+	getMinigameInstanceRoot = function(instanceId)
+		if type(instanceId) ~= "string" or instanceId == "" then
+			return nil
+		end
+		local things = workspace:FindFirstChild("__THINGS")
+		if not things then
+			return nil
+		end
+		local instances = things:FindFirstChild("Instances")
+		if not instances then
+			return nil
+		end
+		local folder = instances:FindFirstChild(instanceId)
+		if folder then
+			return folder
+		end
+		if InstancingCmds then
+			local m = nil
+			pcall(function()
+				m = InstancingCmds.Get and InstancingCmds.Get()
+				if not m and InstancingCmds.GetModel then
+					m = InstancingCmds.GetModel()
 				end
+			end)
+			if m then
+				return m
 			end
 		end
-	end)
-	if fired > 0 and label then
-		traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
+		return nil
 	end
-end
 
-local function tryGenericObbyFinish(root, instanceId)
-	if not root then
-		return
-	end
-	local maxD = cfg().minigameObbyFinishSearchDepth or 26
-	local names = cfg().minigameObbyFinishPartNames or {}
-	local nameSet = {}
-	for _, n in ipairs(names) do
-		nameSet[string.lower(tostring(n))] = true
-	end
-	local best, bestY = nil, -1e9
-	local bestCk, bestCkY = nil, -1e9
-	local function considerPart(p)
-		if not p or not p:IsA("BasePart") then
+	local function tryMinigameWave2Proximity(root, label)
+		local maxD = cfg().minigameWave2SearchDepth or 14
+		local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
+		local ch = LocalPlayer.Character
+		local pp = ch and ch.PrimaryPart
+		if not pp or not root then
 			return
 		end
-		local ln = string.lower(p.Name)
-		if nameSet[ln] then
-			local y = p.Position.Y
-			if y > bestY then
-				bestY = y
-				best = p
-			end
-		elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
-			local y = p.Position.Y
-			if y > bestCkY then
-				bestCkY = y
-				bestCk = p
-			end
-		end
-	end
-	forEachDescendantDepthLimited(root, maxD, function(inst)
-		considerPart(inst)
-	end)
-	local target = best or bestCk
-	if not target then
-		return
-	end
-	local ch = LocalPlayer.Character
-	local pp = ch and ch.PrimaryPart
-	if not pp then
-		return
-	end
-	if (pp.Position - target.Position).Magnitude > 12 then
-		pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
-		log("minigame obby pivot", instanceId, target.Name)
-	end
-	if cfg().minigameObbyTouchNearbyParts then
-		for _, ch2 in ipairs(target:GetChildren()) do
-			if ch2:IsA("BasePart") then
-				Exec.fireTouchInterest(ch2, pp, 0)
-			end
-		end
-		Exec.fireTouchInterest(target, pp, 0)
-	end
-	if cfg().minigameObbyFireChildPrompts then
-		local nPrompt = 0
-		forEachDescendantDepthLimited(target, 4, function(inst)
-			if nPrompt > 12 then
+		local fired = 0
+		forEachDescendantDepthLimited(root, maxD, function(inst)
+			if fired >= maxP then
 				return
 			end
 			if inst:IsA("ProximityPrompt") and inst.Enabled then
-				Exec.fireProximityPrompt(inst)
-				nPrompt = nPrompt + 1
+				local parent = inst.Parent
+				if parent and parent:IsA("BasePart") then
+					local dist = (parent.Position - pp.Position).Magnitude
+					if dist <= (inst.MaxActivationDistance or 10) + 10 then
+						Exec.fireProximityPrompt(inst)
+						fired = fired + 1
+					end
+				end
 			end
 		end)
-	end
-end
-
-local function tryMinigameFishing(root)
-	tryMinigameWave2Proximity(root, "Fishing")
-	tryGenericObbyFinish(root, "Fishing")
-end
-
-local function tryMinigameDigsite(root)
-	tryMinigameWave2Proximity(root, "Digsite")
-	tryGenericObbyFinish(root, "Digsite")
-end
-
-local function tryMinigameChestRush(root)
-	tryMinigameWave2Proximity(root, "ChestRush")
-	tryGenericObbyFinish(root, "ChestRush")
-end
-
-local MINIGAME_WAVE2_HANDLERS = {
-	Fishing = tryMinigameFishing,
-	AdvancedFishing = tryMinigameFishing,
-	FishingEvent = tryMinigameFishing,
-	Digsite = tryMinigameDigsite,
-	AdvancedDigsite = tryMinigameDigsite,
-	ChestRush = tryMinigameChestRush,
-}
-
-local function tryMinigameTouchLeaveTeleport(root)
-	if not root then
-		return
-	end
-	local leave = root:FindFirstChild("LeaveTeleport", true)
-	if not leave or not leave:IsA("BasePart") then
-		return
-	end
-	local ch = LocalPlayer.Character
-	local pp = ch and ch.PrimaryPart
-	if not pp then
-		return
-	end
-	if (pp.Position - leave.Position).Magnitude < 22 then
-		Exec.fireTouchInterest(leave, pp, 0)
-	end
-end
-
-local function tryMinigameAssistPulse()
-	local now = tick()
-	if now - lastMinigameAssistTick < (cfg().minigameAssistTickInterval or 0.16) then
-		return
-	end
-	lastMinigameAssistTick = now
-	if not InstancingCmds then
-		return
-	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds.IsInInstance()
-	end)
-	if not okIn or not inInst then
-		minigameSessionInstanceId = nil
-		return
-	end
-	local id = nil
-	pcall(function()
-		id = InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID()
-	end)
-	if type(id) ~= "string" or id == "" then
-		return
-	end
-	if minigameSessionInstanceId ~= id then
-		minigameSessionInstanceId = id
-		minigameSessionStartTick = now
-	end
-	local mode = cfg().minigameAssistMode or "skip"
-	local root = getMinigameInstanceRoot(id)
-
-	if mode ~= "complete" then
-		return
+		if fired > 0 and label then
+			traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
+		end
 	end
 
-	if not instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
-		return
-	end
-
-	if now - minigameSessionStartTick > (cfg().minigameStuckLeaveSeconds or 90) then
-		pcall(function()
-			if type(InstancingCmds.Leave) == "function" then
-				InstancingCmds.Leave()
+	tryGenericObbyFinish = function(root, instanceId)
+		if not root then
+			return
+		end
+		local maxD = cfg().minigameObbyFinishSearchDepth or 26
+		local names = cfg().minigameObbyFinishPartNames or {}
+		local nameSet = {}
+		for _, n in ipairs(names) do
+			nameSet[string.lower(tostring(n))] = true
+		end
+		local best, bestY = nil, -1e9
+		local bestCk, bestCkY = nil, -1e9
+		local function considerPart(p)
+			if not p or not p:IsA("BasePart") then
+				return
 			end
-		end)
-		log("minigame stuck timeout Leave", id)
-		minigameSessionInstanceId = nil
-		return
-	end
-
-	if not root then
-		return
-	end
-
-	local w2 = MINIGAME_WAVE2_HANDLERS[id]
-	if w2 then
-		w2(root)
-	else
-		tryGenericObbyFinish(root, id)
-	end
-
-	tryMinigameTouchLeaveTeleport(root)
-end
-
-local function tryQuestAutoLeaveBlockedInstance()
-	if not cfg().questAutoLeaveBlockedInstances or not InstancingCmds then
-		return
-	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds.IsInInstance()
-	end)
-	if not okIn or not inInst then
-		return
-	end
-	local id = nil
-	pcall(function()
-		id = InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID()
-	end)
-	if type(id) ~= "string" or id == "" then
-		return
-	end
-	if not shouldQuestAutoLeaveInstanceId(id) then
-		return
-	end
-	pcall(function()
-		if type(InstancingCmds.Leave) == "function" then
-			InstancingCmds.Leave()
+			local ln = string.lower(p.Name)
+			if nameSet[ln] then
+				local y = p.Position.Y
+				if y > bestY then
+					bestY = y
+					best = p
+				end
+			elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
+				local y = p.Position.Y
+				if y > bestCkY then
+					bestCkY = y
+					bestCk = p
+				end
+			end
 		end
-	end)
-	log("InstancingCmds.Leave", id)
-end
-
-local function runQuestAssistPulse()
-	if not cfg().questAssistEnabled then
-		cachedTrackedObjective = nil
-		AutoRankRuntimeState.diagQuest = {
-			ok = false,
-			where = "config",
-			detail = "questAssistEnabled_false",
-		}
-		return nil, false
-	end
-	tryHatchBusyWatchdog()
-	tryQuestAutoLeaveBlockedInstance()
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if not okIn then
-		cachedTrackedObjective = nil
-		AutoRankRuntimeState.diagQuest = {
-			ok = false,
-			where = "instance",
-			detail = "IsInInstance_pcall_failed",
-		}
-		return nil, false
-	end
-	if inInst then
-		cachedTrackedObjective = nil
-		AutoRankRuntimeState.diagQuest = {
-			ok = false,
-			where = "instance",
-			detail = "quest_pulse_skipped_in_instance",
-		}
-		return nil, false
-	end
-	local tracked = refreshTrackedObjective()
-	local isHatching = false
-	if tracked then
-		local qaOk, qaErr = pcall(function()
-			QuestAssist.tryKeywordCooldownReset(tracked)
-			tryQuestResolveDisplayTargets(tracked)
+		forEachDescendantDepthLimited(root, maxD, function(inst)
+			considerPart(inst)
 		end)
-		if not qaOk then
-			warnErr("quest_resolve_targets", qaErr)
+		local target = best or bestCk
+		if not target then
+			return
 		end
-		local hhOk, hhErr = pcall(function()
-			isHatching = tryQuestEggHatchAssist(tracked) == true or hatchBusy == true
-		end)
-		if not hhOk then
-			warnErr("tryQuestEggHatchAssist", hhErr)
+		local ch = LocalPlayer.Character
+		local pp = ch and ch.PrimaryPart
+		if not pp then
+			return
 		end
-	end
-	local pfOk, pfErr = pcall(function()
-		tryQuestPlaceFlexibleFlag(tracked)
-	end)
-	if not pfOk then
-		warnErr("tryQuestPlaceFlexibleFlag", pfErr)
-	end
-	pcall(function()
-		tryQuestEquipEnchantFromInventory()
-	end)
-	local dqEnd = AutoRankRuntimeState.diagQuest
-	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchBusy then
-		local wantProgress = not tracked
-			or (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
-			or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
-		if wantProgress then
-			local phOk, phErr = pcall(function()
-				if tryQuestEggHatchAssist(nil, { progressOnly = true }) == true then
-					isHatching = true
+		if (pp.Position - target.Position).Magnitude > 12 then
+			pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
+			log("minigame obby pivot", instanceId, target.Name)
+		end
+		if cfg().minigameObbyTouchNearbyParts then
+			for _, ch2 in ipairs(target:GetChildren()) do
+				if ch2:IsA("BasePart") then
+					Exec.fireTouchInterest(ch2, pp, 0)
+				end
+			end
+			Exec.fireTouchInterest(target, pp, 0)
+		end
+		if cfg().minigameObbyFireChildPrompts then
+			local nPrompt = 0
+			forEachDescendantDepthLimited(target, 4, function(inst)
+				if nPrompt > 12 then
+					return
+				end
+				if inst:IsA("ProximityPrompt") and inst.Enabled then
+					Exec.fireProximityPrompt(inst)
+					nPrompt = nPrompt + 1
 				end
 			end)
-			if not phOk then
-				warnErr("tryQuestEggHatchAssist_progressOnly", phErr)
-			end
 		end
 	end
-	isHatching = isHatching or hatchBusy == true
-	return tracked, isHatching
-end
 
-local function tryAutoEquipBestPets()
-	if not cfg().autoEquipBestPetsEnabled or not PetCmds or type(PetCmds.EquipBest) ~= "function" then
-		return
+	local function tryMinigameFishing(root)
+		tryMinigameWave2Proximity(root, "Fishing")
+		tryGenericObbyFinish(root, "Fishing")
 	end
-	local now = tick()
-	if now - lastAutoEquipBestTick < (cfg().autoEquipBestPetsInterval or 14) then
-		return
+
+	local function tryMinigameDigsite(root)
+		tryMinigameWave2Proximity(root, "Digsite")
+		tryGenericObbyFinish(root, "Digsite")
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
-		return
+
+	local function tryMinigameChestRush(root)
+		tryMinigameWave2Proximity(root, "ChestRush")
+		tryGenericObbyFinish(root, "ChestRush")
 	end
-	lastAutoEquipBestTick = now
-	pcall(function()
-		PetCmds.EquipBest()
-	end)
-	log("PetCmds.EquipBest")
+
+	MINIGAME_WAVE2_HANDLERS = {
+		Fishing = tryMinigameFishing,
+		AdvancedFishing = tryMinigameFishing,
+		FishingEvent = tryMinigameFishing,
+		Digsite = tryMinigameDigsite,
+		AdvancedDigsite = tryMinigameDigsite,
+		ChestRush = tryMinigameChestRush,
+	}
 end
 
 --- Ниже: методы AutoRankRuntimeState (не local function уровня чанка — лимит Luau 200 локалей).
@@ -4119,6 +3922,215 @@ function AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
 		pp.CFrame = CFrame.new(pos + Vector3.new(0, yOff, 0))
 	end)
 	log("BREAKABLE_SPAWNS pivot", maxId, pos)
+end
+
+function AutoRankRuntimeState.tryMinigameTouchLeaveTeleport(root)
+	if not root then
+		return
+	end
+	local leave = root:FindFirstChild("LeaveTeleport", true)
+	if not leave or not leave:IsA("BasePart") then
+		return
+	end
+	local ch = LocalPlayer.Character
+	local pp = ch and ch.PrimaryPart
+	if not pp then
+		return
+	end
+	if (pp.Position - leave.Position).Magnitude < 22 then
+		Exec.fireTouchInterest(leave, pp, 0)
+	end
+end
+
+function AutoRankRuntimeState.tryMinigameAssistPulse()
+	local now = tick()
+	if now - lastMinigameAssistTick < (cfg().minigameAssistTickInterval or 0.16) then
+		return
+	end
+	lastMinigameAssistTick = now
+	if not InstancingCmds then
+		return
+	end
+	local okIn, inInst = pcall(function()
+		return InstancingCmds.IsInInstance()
+	end)
+	if not okIn or not inInst then
+		minigameSessionInstanceId = nil
+		return
+	end
+	local id = nil
+	pcall(function()
+		id = InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID()
+	end)
+	if type(id) ~= "string" or id == "" then
+		return
+	end
+	if minigameSessionInstanceId ~= id then
+		minigameSessionInstanceId = id
+		minigameSessionStartTick = now
+	end
+	local mode = cfg().minigameAssistMode or "skip"
+	local root = getMinigameInstanceRoot(id)
+
+	if mode ~= "complete" then
+		return
+	end
+
+	if not instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
+		return
+	end
+
+	if now - minigameSessionStartTick > (cfg().minigameStuckLeaveSeconds or 90) then
+		pcall(function()
+			if type(InstancingCmds.Leave) == "function" then
+				InstancingCmds.Leave()
+			end
+		end)
+		log("minigame stuck timeout Leave", id)
+		minigameSessionInstanceId = nil
+		return
+	end
+
+	if not root then
+		return
+	end
+
+	local w2 = MINIGAME_WAVE2_HANDLERS[id]
+	if w2 then
+		w2(root)
+	else
+		tryGenericObbyFinish(root, id)
+	end
+
+	AutoRankRuntimeState.tryMinigameTouchLeaveTeleport(root)
+end
+
+function AutoRankRuntimeState.tryQuestAutoLeaveBlockedInstance()
+	if not cfg().questAutoLeaveBlockedInstances or not InstancingCmds then
+		return
+	end
+	local okIn, inInst = pcall(function()
+		return InstancingCmds.IsInInstance()
+	end)
+	if not okIn or not inInst then
+		return
+	end
+	local id = nil
+	pcall(function()
+		id = InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID()
+	end)
+	if type(id) ~= "string" or id == "" then
+		return
+	end
+	if not shouldQuestAutoLeaveInstanceId(id) then
+		return
+	end
+	pcall(function()
+		if type(InstancingCmds.Leave) == "function" then
+			InstancingCmds.Leave()
+		end
+	end)
+	log("InstancingCmds.Leave", id)
+end
+
+function AutoRankRuntimeState.runQuestAssistPulse()
+	if not cfg().questAssistEnabled then
+		cachedTrackedObjective = nil
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "config",
+			detail = "questAssistEnabled_false",
+		}
+		return nil, false
+	end
+	tryHatchBusyWatchdog()
+	AutoRankRuntimeState.tryQuestAutoLeaveBlockedInstance()
+	local okIn, inInst = pcall(function()
+		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
+	end)
+	if not okIn then
+		cachedTrackedObjective = nil
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "instance",
+			detail = "IsInInstance_pcall_failed",
+		}
+		return nil, false
+	end
+	if inInst then
+		cachedTrackedObjective = nil
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "instance",
+			detail = "quest_pulse_skipped_in_instance",
+		}
+		return nil, false
+	end
+	local tracked = refreshTrackedObjective()
+	local isHatching = false
+	if tracked then
+		local qaOk, qaErr = pcall(function()
+			QuestAssist.tryKeywordCooldownReset(tracked)
+			tryQuestResolveDisplayTargets(tracked)
+		end)
+		if not qaOk then
+			warnErr("quest_resolve_targets", qaErr)
+		end
+		local hhOk, hhErr = pcall(function()
+			isHatching = tryQuestEggHatchAssist(tracked) == true or hatchBusy == true
+		end)
+		if not hhOk then
+			warnErr("tryQuestEggHatchAssist", hhErr)
+		end
+	end
+	local pfOk, pfErr = pcall(function()
+		tryQuestPlaceFlexibleFlag(tracked)
+	end)
+	if not pfOk then
+		warnErr("tryQuestPlaceFlexibleFlag", pfErr)
+	end
+	pcall(function()
+		tryQuestEquipEnchantFromInventory()
+	end)
+	local dqEnd = AutoRankRuntimeState.diagQuest
+	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchBusy then
+		local wantProgress = not tracked
+			or (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
+			or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
+		if wantProgress then
+			local phOk, phErr = pcall(function()
+				if tryQuestEggHatchAssist(nil, { progressOnly = true }) == true then
+					isHatching = true
+				end
+			end)
+			if not phOk then
+				warnErr("tryQuestEggHatchAssist_progressOnly", phErr)
+			end
+		end
+	end
+	isHatching = isHatching or hatchBusy == true
+	return tracked, isHatching
+end
+
+function AutoRankRuntimeState.tryAutoEquipBestPets()
+	if not cfg().autoEquipBestPetsEnabled or not PetCmds or type(PetCmds.EquipBest) ~= "function" then
+		return
+	end
+	local now = tick()
+	if now - lastAutoEquipBestTick < (cfg().autoEquipBestPetsInterval or 14) then
+		return
+	end
+	local okIn, inInst = pcall(function()
+		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
+	end)
+	if okIn and inInst then
+		return
+	end
+	lastAutoEquipBestTick = now
+	pcall(function()
+		PetCmds.EquipBest()
+	end)
+	log("PetCmds.EquipBest")
 end
 
 function AutoRankRuntimeState.tryClaimRankRewards()
@@ -4533,16 +4545,16 @@ function AutoRankRuntimeState.autoRankHeartbeatWork()
 	tryAutoBuyCheapestUpgrade()
 	tryAutoBuffConsumablesPulse()
 	tryAutoDaycare()
-	tryMinigameAssistPulse()
+	AutoRankRuntimeState.tryMinigameAssistPulse()
 	local trackedQuest, isHatching = nil, false
 	local qaOk, qaErr = pcall(function()
-		trackedQuest, isHatching = runQuestAssistPulse()
+		trackedQuest, isHatching = AutoRankRuntimeState.runQuestAssistPulse()
 	end)
 	if not qaOk then
 		warnErr("runQuestAssistPulse", qaErr)
 	end
 	tryClickEggOpeningPrompt()
-	tryAutoEquipBestPets()
+	AutoRankRuntimeState.tryAutoEquipBestPets()
 	tryClickReturnToMaxAreaButton()
 	AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedQuest, isHatching)
 	AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
