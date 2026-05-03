@@ -624,13 +624,13 @@ local function ensureModules()
 		Network = Network or require(Client:WaitForChild("Network"))
 		BreakableFrontend = BreakableFrontend or require(Client:WaitForChild("BreakableFrontend"))
 		Save = Save or require(Client:WaitForChild("Save"))
-		RankCmds = RankCmds or require(Client:WaitForChild("RankCmds"))
+		pcall(function() RankCmds = RankCmds or require(Client:WaitForChild("RankCmds")) end)
 		MapCmds = MapCmds or require(Client:WaitForChild("MapCmds"))
 		InstancingCmds = InstancingCmds or require(Client:WaitForChild("InstancingCmds"))
 		GUI = GUI or require(Client:WaitForChild("GUI"))
 		local Lib = ReplicatedStorage.Library
 		Directory = Directory or require(Lib:WaitForChild("Directory"))
-		RanksUtil = RanksUtil or require(Lib.Util:WaitForChild("RanksUtil"))
+		pcall(function() RanksUtil = RanksUtil or require(Lib.Util:WaitForChild("RanksUtil")) end)
 		FFlags = FFlags or require(Client:WaitForChild("FFlags"))
 		ZoneCmds = ZoneCmds or require(Client:WaitForChild("ZoneCmds"))
 		TeleportMapCmds = TeleportMapCmds or require(Client:WaitForChild("TeleportMapCmds"))
@@ -975,7 +975,7 @@ end
 local EggSlots = {}
 
 function EggSlots.generateBundles(rankEntry)
-	if not rankEntry or not RankCmds then
+	if not rankEntry then
 		return {}
 	end
 	local before = 0
@@ -1028,7 +1028,7 @@ function EggSlots.iterateRankEntriesSorted()
 end
 
 function EggSlots.bundleStatus(bundleEnd)
-	if not Save or not RankCmds or not RanksUtil then
+	if not Save or not RanksUtil then
 		return "LOCKED"
 	end
 	local save = Save.Get()
@@ -1152,7 +1152,7 @@ local function pivotNearEggSlotsMachine()
 end
 
 local function tryAutoBuyEggSlots()
-	if not cfg().autoBuyEggSlots or not Network or not CurrencyCmds or not Directory or not RankCmds then
+	if not cfg().autoBuyEggSlots or not Network or not CurrencyCmds or not Directory then
 		return
 	end
 	local okIn, inInst = pcall(function()
@@ -1202,7 +1202,7 @@ local function tryAutoBuyEggSlots()
 end
 
 local function tryAutoBuyEquipSlots()
-	if not cfg().autoBuyEquipSlots or not Network or not PetEquipCmds or not RankCmds or not CurrencyCmds then
+	if not cfg().autoBuyEquipSlots or not Network or not PetEquipCmds or not CurrencyCmds then
 		return
 	end
 	local okIn, inInst = pcall(function()
@@ -4374,14 +4374,23 @@ function AutoRankRuntimeState.tryRankUpViaGui()
 	if not RankCmds or not GUI then
 		return
 	end
-	if RankCmds.IsMaxRank() then
+	
+	local ok, isMax, blocked, allRedeemed = pcall(function()
+		return RankCmds.IsMaxRank(), select(1, RankCmds.IsRankBlockedByZone()), RankCmds.AllRewardsRedeemed()
+	end)
+	
+	if not ok then
+		-- Если LazyModuleLoader: Unknown entry 'Ranks' в новом мире
 		return
 	end
-	local blockedZone = select(1, RankCmds.IsRankBlockedByZone())
-	if blockedZone then
+	
+	if isMax then
 		return
 	end
-	if not RankCmds.AllRewardsRedeemed() then
+	if blocked then
+		return
+	end
+	if not allRedeemed then
 		return
 	end
 	lastRankUpGuiTick = now
