@@ -3675,129 +3675,127 @@ local function tryQuestEggHatchAssist(tracked, opts)
 	return true
 end
 
---- Минигame: обход дерева / Wave2 / обби — вне IIFE (в одном scope IIFE срабатывал лимит Luau ~200 локалей).
-local function minigameForEachDescendantDepthLimited(root, maxDepth, callback)
-	if not root or type(callback) ~= "function" then
-		return
-	end
-	local function visit(inst, depth)
-		callback(inst, depth)
-		if depth >= maxDepth then
+--- Минигame: один IIFE → таблица (иначе корневой чанк превышает лимит ~200 локалей Luau).
+local MinigameAssist = (function()
+	local function forEachDescendantDepthLimited(root, maxDepth, callback)
+		if not root or type(callback) ~= "function" then
 			return
 		end
-		for _, ch in ipairs(inst:GetChildren()) do
-			visit(ch, depth + 1)
+		local function visit(inst, depth)
+			callback(inst, depth)
+			if depth >= maxDepth then
+				return
+			end
+			for _, ch in ipairs(inst:GetChildren()) do
+				visit(ch, depth + 1)
+			end
 		end
+		visit(root, 0)
 	end
-	visit(root, 0)
-end
 
-local function minigameTryWave2Proximity(root, label)
-	local maxD = cfg().minigameWave2SearchDepth or 14
-	local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
-	local ch = LocalPlayer.Character
-	local pp = ch and ch.PrimaryPart
-	if not pp or not root then
-		return
-	end
-	local fired = 0
-	minigameForEachDescendantDepthLimited(root, maxD, function(inst)
-		if fired >= maxP then
+	local function tryWave2Proximity(root, label)
+		local maxD = cfg().minigameWave2SearchDepth or 14
+		local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
+		local ch = LocalPlayer.Character
+		local pp = ch and ch.PrimaryPart
+		if not pp or not root then
 			return
 		end
-		if inst:IsA("ProximityPrompt") and inst.Enabled then
-			local parent = inst.Parent
-			if parent and parent:IsA("BasePart") then
-				local dist = (parent.Position - pp.Position).Magnitude
-				if dist <= (inst.MaxActivationDistance or 10) + 10 then
-					Exec.fireProximityPrompt(inst)
-					fired = fired + 1
-				end
-			end
-		end
-	end)
-	if fired > 0 and label then
-		traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
-	end
-end
-
-local function minigameTryGenericObbyFinish(root, instanceId)
-	if not root then
-		return
-	end
-	local maxD = cfg().minigameObbyFinishSearchDepth or 26
-	local names = cfg().minigameObbyFinishPartNames or {}
-	local nameSet = {}
-	for _, n in ipairs(names) do
-		nameSet[string.lower(tostring(n))] = true
-	end
-	local best, bestY = nil, -1e9
-	local bestCk, bestCkY = nil, -1e9
-	local function considerPart(p)
-		if not p or not p:IsA("BasePart") then
-			return
-		end
-		local ln = string.lower(p.Name)
-		if nameSet[ln] then
-			local y = p.Position.Y
-			if y > bestY then
-				bestY = y
-				best = p
-			end
-		elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
-			local y = p.Position.Y
-			if y > bestCkY then
-				bestCkY = y
-				bestCk = p
-			end
-		end
-	end
-	minigameForEachDescendantDepthLimited(root, maxD, function(inst)
-		considerPart(inst)
-	end)
-	local target = best or bestCk
-	if not target then
-		return
-	end
-	local ch2 = LocalPlayer.Character
-	local pp = ch2 and ch2.PrimaryPart
-	if not pp then
-		return
-	end
-	if (pp.Position - target.Position).Magnitude > 12 then
-		pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
-		log("minigame obby pivot", instanceId, target.Name)
-	end
-	if cfg().minigameObbyTouchNearbyParts then
-		for _, chChild in ipairs(target:GetChildren()) do
-			if chChild:IsA("BasePart") then
-				Exec.fireTouchInterest(chChild, pp, 0)
-			end
-		end
-		Exec.fireTouchInterest(target, pp, 0)
-	end
-	if cfg().minigameObbyFireChildPrompts then
-		local nPrompt = 0
-		minigameForEachDescendantDepthLimited(target, 4, function(inst)
-			if nPrompt > 12 then
+		local fired = 0
+		forEachDescendantDepthLimited(root, maxD, function(inst)
+			if fired >= maxP then
 				return
 			end
 			if inst:IsA("ProximityPrompt") and inst.Enabled then
-				Exec.fireProximityPrompt(inst)
-				nPrompt = nPrompt + 1
+				local parent = inst.Parent
+				if parent and parent:IsA("BasePart") then
+					local dist = (parent.Position - pp.Position).Magnitude
+					if dist <= (inst.MaxActivationDistance or 10) + 10 then
+						Exec.fireProximityPrompt(inst)
+						fired = fired + 1
+					end
+				end
 			end
 		end)
+		if fired > 0 and label then
+			traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
+		end
 	end
-end
 
-local function minigameWave2Combo(root, label)
-	minigameTryWave2Proximity(root, label)
-	minigameTryGenericObbyFinish(root, label)
-end
+	local function tryGenericObbyFinish(root, instanceId)
+		if not root then
+			return
+		end
+		local maxD = cfg().minigameObbyFinishSearchDepth or 26
+		local names = cfg().minigameObbyFinishPartNames or {}
+		local nameSet = {}
+		for _, n in ipairs(names) do
+			nameSet[string.lower(tostring(n))] = true
+		end
+		local best, bestY = nil, -1e9
+		local bestCk, bestCkY = nil, -1e9
+		local function considerPart(p)
+			if not p or not p:IsA("BasePart") then
+				return
+			end
+			local ln = string.lower(p.Name)
+			if nameSet[ln] then
+				local y = p.Position.Y
+				if y > bestY then
+					bestY = y
+					best = p
+				end
+			elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
+				local y = p.Position.Y
+				if y > bestCkY then
+					bestCkY = y
+					bestCk = p
+				end
+			end
+		end
+		forEachDescendantDepthLimited(root, maxD, function(inst)
+			considerPart(inst)
+		end)
+		local target = best or bestCk
+		if not target then
+			return
+		end
+		local ch2 = LocalPlayer.Character
+		local pp = ch2 and ch2.PrimaryPart
+		if not pp then
+			return
+		end
+		if (pp.Position - target.Position).Magnitude > 12 then
+			pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
+			log("minigame obby pivot", instanceId, target.Name)
+		end
+		if cfg().minigameObbyTouchNearbyParts then
+			for _, chChild in ipairs(target:GetChildren()) do
+				if chChild:IsA("BasePart") then
+					Exec.fireTouchInterest(chChild, pp, 0)
+				end
+			end
+			Exec.fireTouchInterest(target, pp, 0)
+		end
+		if cfg().minigameObbyFireChildPrompts then
+			local nPrompt = 0
+			forEachDescendantDepthLimited(target, 4, function(inst)
+				if nPrompt > 12 then
+					return
+				end
+				if inst:IsA("ProximityPrompt") and inst.Enabled then
+					Exec.fireProximityPrompt(inst)
+					nPrompt = nPrompt + 1
+				end
+			end)
+		end
+	end
 
---- Минигame: IIFE — только id-листы и корень инстанса.
-local instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoot, tryGenericObbyFinish, MINIGAME_WAVE2_HANDLERS
-instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoot, tryGenericObbyFinish, MINIGAME_WAVE2_HANDLERS = (function()
+	local function wave2Combo(root, label)
+		tryWave2Proximity(root, label)
+		tryGenericObbyFinish(root, label)
+	end
+
 	local function instanceIdInMinigameList(id, list)
 		if type(id) ~= "string" or id == "" or type(list) ~= "table" then
 			return false
@@ -3861,13 +3859,13 @@ instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoo
 	end
 
 	local fishing = function(root)
-		minigameWave2Combo(root, "Fishing")
+		wave2Combo(root, "Fishing")
 	end
 	local digsite = function(root)
-		minigameWave2Combo(root, "Digsite")
+		wave2Combo(root, "Digsite")
 	end
 	local chestRush = function(root)
-		minigameWave2Combo(root, "ChestRush")
+		wave2Combo(root, "ChestRush")
 	end
 	local wave2Handlers = {
 		Fishing = fishing,
@@ -3878,11 +3876,13 @@ instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoo
 		ChestRush = chestRush,
 	}
 
-	return instanceIdInMinigameList,
-		shouldQuestAutoLeaveInstanceId,
-		getMinigameInstanceRoot,
-		minigameTryGenericObbyFinish,
-		wave2Handlers
+	return {
+		instanceIdInMinigameList = instanceIdInMinigameList,
+		shouldQuestAutoLeaveInstanceId = shouldQuestAutoLeaveInstanceId,
+		getMinigameInstanceRoot = getMinigameInstanceRoot,
+		tryGenericObbyFinish = tryGenericObbyFinish,
+		wave2Handlers = wave2Handlers,
+	}
 end)()
 
 --- Ниже: методы AutoRankRuntimeState (локальные function — свой лимит регистров).
@@ -4092,13 +4092,13 @@ function AutoRankRuntimeState.tryMinigameAssistPulse()
 		minigameSessionStartTick = now
 	end
 	local mode = cfg().minigameAssistMode or "skip"
-	local root = getMinigameInstanceRoot(id)
+	local root = MinigameAssist.getMinigameInstanceRoot(id)
 
 	if mode ~= "complete" then
 		return
 	end
 
-	if not instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
+	if not MinigameAssist.instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
 		return
 	end
 
@@ -4117,11 +4117,11 @@ function AutoRankRuntimeState.tryMinigameAssistPulse()
 		return
 	end
 
-	local w2 = MINIGAME_WAVE2_HANDLERS[id]
+	local w2 = MinigameAssist.wave2Handlers[id]
 	if w2 then
 		w2(root)
 	else
-		tryGenericObbyFinish(root, id)
+		MinigameAssist.tryGenericObbyFinish(root, id)
 	end
 
 	AutoRankRuntimeState.tryMinigameTouchLeaveTeleport(root)
@@ -4144,7 +4144,7 @@ function AutoRankRuntimeState.tryQuestAutoLeaveBlockedInstance()
 	if type(id) ~= "string" or id == "" then
 		return
 	end
-	if not shouldQuestAutoLeaveInstanceId(id) then
+	if not MinigameAssist.shouldQuestAutoLeaveInstanceId(id) then
 		return
 	end
 	pcall(function()
