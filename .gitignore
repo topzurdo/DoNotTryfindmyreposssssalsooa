@@ -1,0 +1,19 @@
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Редакторы / IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Локальный мусор / черновики (папка по названию в репозитории)
+ignore this folder/
+
+# Логи и временное
+*.log
+*.tmp
+*.bak
