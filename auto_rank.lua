@@ -146,6 +146,8 @@ local DEFAULT = {
 	questTeleportYOffset = 6,
 	--- Если у цели HUD есть мировой Target (Part/Model) — не звать телепорт на макс. зону
 	questAssistSkipFarmTeleportWhenObjective = true,
+	--- false: не блокировать квест при GUI.Transition() (частый «NO environment … GUITransition» без подхода к ракете)
+	questBlockOnGuiTransition = false,
 	questAutoUnlockEgg = true,
 	--- HatchingCmds: Enable(AUTO) + SetupEgg/SetupCustomEgg + AttemptHatch (Invoke Eggs_RequestPurchase)
 	questAutoHatch = true,
@@ -1946,7 +1948,7 @@ local function questObjectiveEnvironmentBlockedDetail()
 		if Variables.IsTeleportingWorld4 then
 			table.insert(reasons, "IsTeleportingWorld4")
 		end
-		if GUI.Transition and GUI.Transition().Enabled then
+		if cfg().questBlockOnGuiTransition and GUI.Transition and GUI.Transition().Enabled then
 			table.insert(reasons, "GUITransition")
 		end
 		if InstancingCmds.IsInInstance and InstancingCmds.IsInInstance("BasketballEvent") then
@@ -2516,6 +2518,36 @@ function QuestAssist.tryKeywordCooldownReset(tracked)
 	end
 end
 
+--- Имя генератора GoalCmds «Travel To Tech» (как в ReplicatedStorage...Transitions.Travel To Tech).
+local function isTravelToTechGeneratorName(genName)
+	local g = string.lower(genName or "")
+	return string.find(g, "travel to tech", 1, true) ~= nil
+		or string.find(g, "tech starter", 1, true) ~= nil
+		or (string.find(g, "world 2", 1, true) and string.find(g, "tech", 1, true))
+		or string.find(g, "tech world", 1, true) ~= nil
+end
+
+--- Как в Studio Callback Travel To Tech: GetInteractFolder("Rainbow Road") → Frame → Rocket → RocketInteract
+local function rainbowRoadRocketInteractPart()
+	if not ZonesUtil or type(ZonesUtil.GetInteractFolder) ~= "function" then
+		return nil
+	end
+	local folder = nil
+	pcall(function()
+		folder = ZonesUtil.GetInteractFolder("Rainbow Road")
+	end)
+	if not folder then
+		return nil
+	end
+	local frame = folder:FindFirstChild("Frame")
+	local rocket = frame and frame:FindFirstChild("Rocket")
+	local ri = rocket and rocket:FindFirstChild("RocketInteract")
+	if ri and (ri:IsA("BasePart") or (ri:IsA("Model") and ri.PrimaryPart)) then
+		return ri
+	end
+	return nil
+end
+
 --- Tech Rocket (World 1 → 2): Network.Fire("RequestTechRocket") — см. Scripts.Game.Misc "Tech Rocket" / SetupRocketInteract + Message.New.
 local function tryTravelWorldDirectNetworkFire(genName)
 	if cfg().questTravelWorldDirectNetwork == false then
@@ -2524,14 +2556,7 @@ local function tryTravelWorldDirectNetworkFire(genName)
 	if not Network or type(Network.Fire) ~= "function" then
 		return false
 	end
-	local g = string.lower(genName or "")
-	local remoteName = nil
-	if string.find(g, "travel to tech", 1, true)
-		or string.find(g, "tech starter", 1, true)
-		or string.find(g, "world 2", 1, true) and string.find(g, "tech", 1, true)
-		or string.find(g, "tech world", 1, true) then
-		remoteName = "RequestTechRocket"
-	end
+	local remoteName = isTravelToTechGeneratorName(genName) and "RequestTechRocket" or nil
 	if not remoteName then
 		return false
 	end
@@ -2628,6 +2653,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 	local yOff = cfg().questTeleportYOffset or 6
 	local genName = tracked._generatorName
 	local displays = tracked.Displays
+	local handledPhysical = false
 
 	for _, disp in ipairs(displays) do
 		local t = disp and disp.Target
@@ -2640,6 +2666,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 	for _, disp in ipairs(displays) do
 		local t = disp and disp.Target
 		if typeof(t) == "Instance" and t:IsA("ClickDetector") then
+			handledPhysical = true
 			tryQuestTargetExecutorExtras(t, pp, genName)
 			return
 		end
@@ -2648,6 +2675,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 	for _, disp in ipairs(displays) do
 		local t = disp and disp.Target
 		if typeof(t) == "Instance" and t:IsA("BasePart") then
+			handledPhysical = true
 			if cfg().questTeleportToTarget and pp then
 				if (pp.Position - t.Position).Magnitude >= minD then
 					pcall(function()
@@ -2660,6 +2688,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 			return
 		end
 		if typeof(t) == "Instance" and t:IsA("Model") and t.PrimaryPart then
+			handledPhysical = true
 			local pos = t.PrimaryPart.Position
 			if cfg().questTeleportToTarget and pp then
 				if (pp.Position - pos).Magnitude >= minD then
@@ -2681,6 +2710,21 @@ local function tryQuestResolveDisplayTargets(tracked)
 				log("quest GUI click →", genName, t:GetFullName())
 				return
 			end
+		end
+	end
+
+	--- Travel To Tech: при дистанции >500 студов клиент не кладёт Target в Displays (см. Studio) — тянем к RocketInteract сами.
+	if not handledPhysical and isTravelToTechGeneratorName(genName) then
+		local ri = rainbowRoadRocketInteractPart()
+		if ri and pp then
+			local anchor = ri:IsA("BasePart") and ri or (ri:IsA("Model") and ri.PrimaryPart or nil)
+			if anchor and cfg().questTeleportToTarget and (pp.Position - anchor.Position).Magnitude >= minD then
+				pcall(function()
+					pp.CFrame = CFrame.new(anchor.Position + Vector3.new(0, yOff, 0))
+				end)
+				log("quest teleport (Travel To Tech fallback) →", ri:GetFullName())
+			end
+			tryQuestTargetExecutorExtras(ri, pp, genName)
 		end
 	end
 end
@@ -3157,7 +3201,14 @@ local function tryQuestPlaceFlexibleFlag(tracked)
 end
 
 local function objectiveHasWorldTarget(tracked)
-	if not tracked or type(tracked.Displays) ~= "table" then
+	if not tracked then
+		return false
+	end
+	--- Travel To Tech: при дистанции >500 в Displays нет Target (см. Studio), но цель всё равно мировая.
+	if isTravelToTechGeneratorName(tracked._generatorName) then
+		return true
+	end
+	if type(tracked.Displays) ~= "table" then
 		return false
 	end
 	for _, disp in ipairs(tracked.Displays) do
@@ -3624,27 +3675,130 @@ local function tryQuestEggHatchAssist(tracked, opts)
 	return true
 end
 
---- Минигame-хелперы внутри do — меньше local-регистров на чанке (лимит 200 Luau).
-local instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoot, tryGenericObbyFinish
-local MINIGAME_WAVE2_HANDLERS
-do
-	local function forEachDescendantDepthLimited(root, maxDepth, callback)
-		if not root or type(callback) ~= "function" then
+--- Минигame: обход дерева / Wave2 / обби — вне IIFE (в одном scope IIFE срабатывал лимит Luau ~200 локалей).
+local function minigameForEachDescendantDepthLimited(root, maxDepth, callback)
+	if not root or type(callback) ~= "function" then
+		return
+	end
+	local function visit(inst, depth)
+		callback(inst, depth)
+		if depth >= maxDepth then
 			return
 		end
-		local function visit(inst, depth)
-			callback(inst, depth)
-			if depth >= maxDepth then
-				return
-			end
-			for _, ch in ipairs(inst:GetChildren()) do
-				visit(ch, depth + 1)
+		for _, ch in ipairs(inst:GetChildren()) do
+			visit(ch, depth + 1)
+		end
+	end
+	visit(root, 0)
+end
+
+local function minigameTryWave2Proximity(root, label)
+	local maxD = cfg().minigameWave2SearchDepth or 14
+	local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
+	local ch = LocalPlayer.Character
+	local pp = ch and ch.PrimaryPart
+	if not pp or not root then
+		return
+	end
+	local fired = 0
+	minigameForEachDescendantDepthLimited(root, maxD, function(inst)
+		if fired >= maxP then
+			return
+		end
+		if inst:IsA("ProximityPrompt") and inst.Enabled then
+			local parent = inst.Parent
+			if parent and parent:IsA("BasePart") then
+				local dist = (parent.Position - pp.Position).Magnitude
+				if dist <= (inst.MaxActivationDistance or 10) + 10 then
+					Exec.fireProximityPrompt(inst)
+					fired = fired + 1
+				end
 			end
 		end
-		visit(root, 0)
+	end)
+	if fired > 0 and label then
+		traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
 	end
+end
 
-	instanceIdInMinigameList = function(id, list)
+local function minigameTryGenericObbyFinish(root, instanceId)
+	if not root then
+		return
+	end
+	local maxD = cfg().minigameObbyFinishSearchDepth or 26
+	local names = cfg().minigameObbyFinishPartNames or {}
+	local nameSet = {}
+	for _, n in ipairs(names) do
+		nameSet[string.lower(tostring(n))] = true
+	end
+	local best, bestY = nil, -1e9
+	local bestCk, bestCkY = nil, -1e9
+	local function considerPart(p)
+		if not p or not p:IsA("BasePart") then
+			return
+		end
+		local ln = string.lower(p.Name)
+		if nameSet[ln] then
+			local y = p.Position.Y
+			if y > bestY then
+				bestY = y
+				best = p
+			end
+		elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
+			local y = p.Position.Y
+			if y > bestCkY then
+				bestCkY = y
+				bestCk = p
+			end
+		end
+	end
+	minigameForEachDescendantDepthLimited(root, maxD, function(inst)
+		considerPart(inst)
+	end)
+	local target = best or bestCk
+	if not target then
+		return
+	end
+	local ch2 = LocalPlayer.Character
+	local pp = ch2 and ch2.PrimaryPart
+	if not pp then
+		return
+	end
+	if (pp.Position - target.Position).Magnitude > 12 then
+		pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
+		log("minigame obby pivot", instanceId, target.Name)
+	end
+	if cfg().minigameObbyTouchNearbyParts then
+		for _, chChild in ipairs(target:GetChildren()) do
+			if chChild:IsA("BasePart") then
+				Exec.fireTouchInterest(chChild, pp, 0)
+			end
+		end
+		Exec.fireTouchInterest(target, pp, 0)
+	end
+	if cfg().minigameObbyFireChildPrompts then
+		local nPrompt = 0
+		minigameForEachDescendantDepthLimited(target, 4, function(inst)
+			if nPrompt > 12 then
+				return
+			end
+			if inst:IsA("ProximityPrompt") and inst.Enabled then
+				Exec.fireProximityPrompt(inst)
+				nPrompt = nPrompt + 1
+			end
+		end)
+	end
+end
+
+local function minigameWave2Combo(root, label)
+	minigameTryWave2Proximity(root, label)
+	minigameTryGenericObbyFinish(root, label)
+end
+
+--- Минигame: IIFE — только id-листы и корень инстанса.
+local instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoot, tryGenericObbyFinish, MINIGAME_WAVE2_HANDLERS
+instanceIdInMinigameList, shouldQuestAutoLeaveInstanceId, getMinigameInstanceRoot, tryGenericObbyFinish, MINIGAME_WAVE2_HANDLERS = (function()
+	local function instanceIdInMinigameList(id, list)
 		if type(id) ~= "string" or id == "" or type(list) ~= "table" then
 			return false
 		end
@@ -3656,8 +3810,7 @@ do
 		return false
 	end
 
-	--- Принудительный Leave: явный instanceIdsForceLeave или questBlockedInstanceIds, с учётом minigameAssistMode + autoplay.
-	shouldQuestAutoLeaveInstanceId = function(id)
+	local function shouldQuestAutoLeaveInstanceId(id)
 		if type(id) ~= "string" or id == "" then
 			return false
 		end
@@ -3676,7 +3829,7 @@ do
 		return true
 	end
 
-	getMinigameInstanceRoot = function(instanceId)
+	local function getMinigameInstanceRoot(instanceId)
 		if type(instanceId) ~= "string" or instanceId == "" then
 			return nil
 		end
@@ -3707,130 +3860,32 @@ do
 		return nil
 	end
 
-	local function tryMinigameWave2Proximity(root, label)
-		local maxD = cfg().minigameWave2SearchDepth or 14
-		local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
-		local ch = LocalPlayer.Character
-		local pp = ch and ch.PrimaryPart
-		if not pp or not root then
-			return
-		end
-		local fired = 0
-		forEachDescendantDepthLimited(root, maxD, function(inst)
-			if fired >= maxP then
-				return
-			end
-			if inst:IsA("ProximityPrompt") and inst.Enabled then
-				local parent = inst.Parent
-				if parent and parent:IsA("BasePart") then
-					local dist = (parent.Position - pp.Position).Magnitude
-					if dist <= (inst.MaxActivationDistance or 10) + 10 then
-						Exec.fireProximityPrompt(inst)
-						fired = fired + 1
-					end
-				end
-			end
-		end)
-		if fired > 0 and label then
-			traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
-		end
+	local fishing = function(root)
+		minigameWave2Combo(root, "Fishing")
 	end
-
-	tryGenericObbyFinish = function(root, instanceId)
-		if not root then
-			return
-		end
-		local maxD = cfg().minigameObbyFinishSearchDepth or 26
-		local names = cfg().minigameObbyFinishPartNames or {}
-		local nameSet = {}
-		for _, n in ipairs(names) do
-			nameSet[string.lower(tostring(n))] = true
-		end
-		local best, bestY = nil, -1e9
-		local bestCk, bestCkY = nil, -1e9
-		local function considerPart(p)
-			if not p or not p:IsA("BasePart") then
-				return
-			end
-			local ln = string.lower(p.Name)
-			if nameSet[ln] then
-				local y = p.Position.Y
-				if y > bestY then
-					bestY = y
-					best = p
-				end
-			elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
-				local y = p.Position.Y
-				if y > bestCkY then
-					bestCkY = y
-					bestCk = p
-				end
-			end
-		end
-		forEachDescendantDepthLimited(root, maxD, function(inst)
-			considerPart(inst)
-		end)
-		local target = best or bestCk
-		if not target then
-			return
-		end
-		local ch = LocalPlayer.Character
-		local pp = ch and ch.PrimaryPart
-		if not pp then
-			return
-		end
-		if (pp.Position - target.Position).Magnitude > 12 then
-			pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
-			log("minigame obby pivot", instanceId, target.Name)
-		end
-		if cfg().minigameObbyTouchNearbyParts then
-			for _, ch2 in ipairs(target:GetChildren()) do
-				if ch2:IsA("BasePart") then
-					Exec.fireTouchInterest(ch2, pp, 0)
-				end
-			end
-			Exec.fireTouchInterest(target, pp, 0)
-		end
-		if cfg().minigameObbyFireChildPrompts then
-			local nPrompt = 0
-			forEachDescendantDepthLimited(target, 4, function(inst)
-				if nPrompt > 12 then
-					return
-				end
-				if inst:IsA("ProximityPrompt") and inst.Enabled then
-					Exec.fireProximityPrompt(inst)
-					nPrompt = nPrompt + 1
-				end
-			end)
-		end
+	local digsite = function(root)
+		minigameWave2Combo(root, "Digsite")
 	end
-
-	local function tryMinigameFishing(root)
-		tryMinigameWave2Proximity(root, "Fishing")
-		tryGenericObbyFinish(root, "Fishing")
+	local chestRush = function(root)
+		minigameWave2Combo(root, "ChestRush")
 	end
-
-	local function tryMinigameDigsite(root)
-		tryMinigameWave2Proximity(root, "Digsite")
-		tryGenericObbyFinish(root, "Digsite")
-	end
-
-	local function tryMinigameChestRush(root)
-		tryMinigameWave2Proximity(root, "ChestRush")
-		tryGenericObbyFinish(root, "ChestRush")
-	end
-
-	MINIGAME_WAVE2_HANDLERS = {
-		Fishing = tryMinigameFishing,
-		AdvancedFishing = tryMinigameFishing,
-		FishingEvent = tryMinigameFishing,
-		Digsite = tryMinigameDigsite,
-		AdvancedDigsite = tryMinigameDigsite,
-		ChestRush = tryMinigameChestRush,
+	local wave2Handlers = {
+		Fishing = fishing,
+		AdvancedFishing = fishing,
+		FishingEvent = fishing,
+		Digsite = digsite,
+		AdvancedDigsite = digsite,
+		ChestRush = chestRush,
 	}
-end
 
---- Ниже: методы AutoRankRuntimeState (не local function уровня чанка — лимит Luau 200 локалей).
+	return instanceIdInMinigameList,
+		shouldQuestAutoLeaveInstanceId,
+		getMinigameInstanceRoot,
+		minigameTryGenericObbyFinish,
+		wave2Handlers
+end)()
+
+--- Ниже: методы AutoRankRuntimeState (локальные function — свой лимит регистров).
 function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatching)
 	if isHatching or hatchBusy then
 		return
