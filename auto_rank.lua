@@ -394,6 +394,11 @@ local DEFAULT = {
 	--- Квест Target: fireclickdetector / firetouchinterest (агрессивнее, по умолчанию выкл.)
 	questUseFireClickDetector = false,
 	questUseFireTouchInterest = false,
+	--- Квесты перехода между мирами: в клиенте Interact → Message.New(OK?) → Network.Fire. fireProximityPrompt модалку не жмёт — дублируем Fire.
+	questTravelWorldDirectNetwork = true,
+	questTravelWorldDirectNetworkInterval = 2.6,
+	--- RequestTechRocket: при Rebirths < 4 клиент ставит только гейт (см. Tech Rocket.lua). Отключите проверку только если уверены в Save.
+	questTravelTechRequireRebirth4 = true,
 	--- После forceClickBreakable — попытка fireclickdetector на модели
 	farmUseFireClickDetectorFallback = false,
 	--- Лог всех Network.Invoke через hookfunction (отладка)
@@ -695,6 +700,8 @@ local lastClaimTick = 0
 local lastRankUpGuiTick = 0
 local lastZonePurchaseTick = 0
 local lastTeleportTick = 0
+local lastTravelWorldDirectNetworkTick = 0
+local lastTravelTechRebirthWarnTick = 0
 local lastReturnAreaGuiTick = 0
 local lastQuestPickTick = 0
 local lastQuestHatchTick = 0
@@ -2502,10 +2509,68 @@ function QuestAssist.tryKeywordCooldownReset(tracked)
 	end
 	if has("travel ") or has("traverse") or has("void island") or has("tech ") or has("fantasy ") then
 		lastTeleportTick = 0
+		lastTravelWorldDirectNetworkTick = 0
 	end
 	if has("farming") or has("farm token") or has("farming token") or has("halloween") or has("trick or treat") then
 		lastQuestPickTick = 0
 	end
+end
+
+--- Tech Rocket (World 1 → 2): Network.Fire("RequestTechRocket") — см. Scripts.Game.Misc "Tech Rocket" / SetupRocketInteract + Message.New.
+local function tryTravelWorldDirectNetworkFire(genName)
+	if cfg().questTravelWorldDirectNetwork == false then
+		return false
+	end
+	if not Network or type(Network.Fire) ~= "function" then
+		return false
+	end
+	local g = string.lower(genName or "")
+	local remoteName = nil
+	if string.find(g, "travel to tech", 1, true)
+		or string.find(g, "tech starter", 1, true)
+		or string.find(g, "world 2", 1, true) and string.find(g, "tech", 1, true)
+		or string.find(g, "tech world", 1, true) then
+		remoteName = "RequestTechRocket"
+	end
+	if not remoteName then
+		return false
+	end
+	if remoteName == "RequestTechRocket" and cfg().questTravelTechRequireRebirth4 ~= false then
+		local rb = nil
+		pcall(function()
+			local s = Save and Save.Get and Save.Get()
+			rb = s and type(s.Rebirths) == "number" and s.Rebirths or nil
+		end)
+		if type(rb) == "number" and rb < 4 then
+			local nowW = tick()
+			if nowW - lastTravelTechRebirthWarnTick > 10 then
+				lastTravelTechRebirthWarnTick = nowW
+				trace(
+					"pulse.quest",
+					"Travel To Tech: Rebirth",
+					rb,
+					"/4 — сервер/UI не отправят ракету; повысьте Rebirth или questTravelTechRequireRebirth4 = false"
+				)
+			end
+			return false
+		end
+	end
+	local now = tick()
+	local iv = tonumber(cfg().questTravelWorldDirectNetworkInterval) or 2.6
+	if now - lastTravelWorldDirectNetworkTick < iv then
+		return false
+	end
+	lastTravelWorldDirectNetworkTick = now
+	local ok, err = pcall(function()
+		Network.Fire(remoteName)
+	end)
+	if cfg().log then
+		log("quest travel direct Network.Fire", remoteName, genName, ok and "ok" or err)
+	end
+	if cfg().verboseLog then
+		traceThrottled("travelDirectNet:" .. remoteName, iv + 0.1, "pulse.quest", ok and "Network.Fire OK" or "Network.Fire FAIL", remoteName, genName)
+	end
+	return ok == true
 end
 
 local function tryQuestTargetExecutorExtras(inst, pp, genName)
@@ -2517,6 +2582,7 @@ local function tryQuestTargetExecutorExtras(inst, pp, genName)
 			Exec.fireClickDetector(inst, 0)
 			log("quest Exec.fireClickDetector", genName)
 		end
+		tryTravelWorldDirectNetworkFire(genName)
 		return
 	end
 	--- Travel To Tech / Void / Fantasy: в Studio Target = часть (RocketInteract), ProximityPrompt — потомок (клавиша E).
@@ -2544,6 +2610,7 @@ local function tryQuestTargetExecutorExtras(inst, pp, genName)
 			log("quest Exec.fireTouchInterest", genName)
 		end
 	end
+	tryTravelWorldDirectNetworkFire(genName)
 end
 
 local function tryQuestResolveDisplayTargets(tracked)
@@ -4072,6 +4139,9 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		local qaOk, qaErr = pcall(function()
 			QuestAssist.tryKeywordCooldownReset(tracked)
 			tryQuestResolveDisplayTargets(tracked)
+			if tracked and not QuestAssist.shouldSkipObjectiveInteraction(tracked) then
+				tryTravelWorldDirectNetworkFire(tracked._generatorName)
+			end
 		end)
 		if not qaOk then
 			warnErr("quest_resolve_targets", qaErr)
