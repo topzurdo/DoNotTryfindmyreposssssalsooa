@@ -1,45 +1,3 @@
---[[
-	Auto Rank — PS99, клиентский executor Luau.
-	Прогресс: фарм breakable (farmBreakableClasses: Normal + Present/Gift/… для ранговых квестов) + орбы (Orb).
-	Клейм: Network.Fire("Ranks_ClaimReward", rewardKey).
-	Rank up: MiddleRankUpReady + getconnections.
-	Зоны: Zones_RequestPurchase, телепорт на фарм — по умолчанию только клиентский PivotTo (без Teleports_RequestTeleport / пушки); опционально серверный Invoke.
-	Квесты / цели HUD: те же Callback(), что GoalCmds → GoalsFrontend (приоритет как в игре) —
-	  телепорт к Displays[].Target (Part), клик по Displays[].Target (GuiButton / GUI из ProcessClickSequence),
-	  разблок яйца Eggs_RequestUnlock, хэтч: CustomEggsCmds / SetupEgg + AttemptHatch (без Infinity по умолчанию); после purchase клиент ждёт «Click to open!» (Egg Opening Frontend),
-	  авто-покупка слотов питомцев EquipSlotsMachine_RequestPurchase,
-	  слотов яиц EggHatchSlotsMachine_RequestPurchase (логика Egg Slots Machine: NEXT + Balancing.CalcEggSlotPrice),
-	  дешёвый доступный апгрейд UpgradeCmds.Purchase,
-	  опционально закрытие вкладки машины через TabController.CloseTab (если открыта EggSlotsMachine / EquipSlotsMachine / …),
-	  повторный Pivot после телепорта; один активный runner — getgenv().AutoRankRuntime, выгрузка AutoRankUnload().
-	  UI ребитха: autoDismissRebirthUi — только GUI-сигналы на «Click for more» (без мыши экзекьютора).
-	  Хэтч: hatchBusy + task.spawn (не task.wait в Heartbeat); hatchAfterPivotDelay; телепорт на зону яйца из текста квеста (questEggTeleportIfWrongZone).
-	  В Studio: Physical Eggs Frontend зовёт Eggs_RequestPurchase после BuyMultiple; HatchingCmds.AttemptHatch — другой вход. Оверлей «Click to open!» — Egg Opening Frontend (+ Variables.OpeningEgg); без клика яйцо не продолжает сцену.
-	  Яйца: preferZoneEggWhenProgress — приоритет яйца, стенд которого в текущей зоне (GetEggPart + MapCmds/ZoneCmds по позиции).
-	  Продвинутый фарм: advancedRemoteFarm — якорь макс. зоны; remoteFarmSkipMaxZoneTeleport отключает TP (оставляет «не ту» зону).
-	  forceTeleportWhenBehindMaxZone — если curZone ≠ maxOwned, телепорт на maxOwned всё равно (общая прогрессия монет/гейтов).
-	  Кнопка «Return to Area»: autoClickReturnToAreaButton — дополнительно жмёт GUI при cur ~= maxOwnedZone.
-	  Executor (UNC): getconnections / fireproximityprompt / fireclickdetector / firetouchinterest;
-	  Смена Place (TeleportService → Tech World и т.д.): новый клиент — crossPlaceAutoReload + queue_on_teleport (URL или readfile), иначе инжект не продолжается.
-	  GUI через getconnections / firesignal на RBXScriptSignal (Activated, MouseButton1Click; для оверлея яйца — также LocalPlayer:GetMouse().Button1Down). Без синтетической мыши (mousemoveabs / mouse1click).
-	  Автобаффы (Heartbeat): PotionCmds.Consume (см. questConsumePotionsPreferMaxTier для tier), FruitCmds.Consume, ConsumableCmds.Consume → Consumables_Consume (Studio ActionMenu).
-	  Активные бусты Save.Boosts синхронизирует BoostCmds с сервером — отдельного клиентского «Use» для слотов нет.
-	  Известные инвоки (клиент): Zones_RequestPurchase, InstanceZones_RequestPurchase, Ranks_ClaimReward,
-	  Eggs_RequestPurchase, Eggs_RequestUnlock, EquipSlotsMachine_RequestPurchase, EggHatchSlotsMachine_RequestPurchase,
-	  Upgrades_Purchase, Teleports_RequestTeleport, Orbs: Collect.
-
-	Не покрыто автоматикой (нужны отдельные инвоки/GUI): гильдии, дейли из других окон,
-	ивенты Basketball/EventGoals_Claim, трейды, ручные машины — см. Types.Quests в Studio.
-	  Нормализация GoalGenerators + приоритетный список генераторов (Eggs, Zone, Machines, Transitions, FishingEvent, …): не резать minigame-хьюристикой; GUI-клики включены (questClickGuiTargets).
-	  Квестный флаг при no_goal от GoalGenerators: questAutoPlaceFlagWithoutTrackedGoal + MapCmds.IsInDottedBox.
-	  Зелья: questConsumePotionsPreferMaxTier — выбор стака с максимальным tier (иначе случайный порядок pairs()).
-	  minigameAssistMode: skip | complete | off — диспетчер инстансов (обби/wave2), Minefield не автоматизируется, instanceIdsForceLeave, LeaveTeleport,
-	  InstancingCmds.Leave для блок-листа, PetCmds.EquipBest.
-	  hideEggHatching = прямой Invoke без HatchingCmds; после purchase — autoClickEggOpeningPrompt дергает Mouse.Button1Down (Egg Opening Frontend в Studio), не только GuiButton.
-
-	Конфиг: getgenv().AutoRank = { ... }
-]]
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -47,136 +5,163 @@ local CollectionService = game:GetService("CollectionService")
 local GuiService = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
+local autoRankLoadTick = tick()
+
+local AR = {
+	Cfg = {},
+	Log = {},
+	Exec = {},
+	Modules = {},
+	Net = {},
+	AntiKick = {},
+	UI = {},
+	Pets = {},
+	Reward = {},
+	Lootbox = {},
+	Cons = {},
+	Farm = {},
+	Quest = {},
+	Buy = {},
+	HB = {},
+	CrossPlace = {},
+}
+
+local function pcallWrap0(f) return pcall(f) end
+local function pcallWrap1(f, a) return pcall(f, a) end
+local function pcallWrap2(f, a, b) return pcall(f, a, b) end
+local function pcallWrap3(f, a, b, c) return pcall(f, a, b, c) end
+local function pcallWrap4(f, a, b, c, d) return pcall(f, a, b, c, d) end
+AR.Log.pcallWrap0 = pcallWrap0
+AR.Log.pcallWrap1 = pcallWrap1
+AR.Log.pcallWrap2 = pcallWrap2
+AR.Log.pcallWrap3 = pcallWrap3
+AR.Log.pcallWrap4 = pcallWrap4
 
 local DEFAULT = {
 	enabled = true,
-	--- Фарм
+	safeMode = true,
 	farmNormalBreakables = true,
-	--- BreakableFrontend.AllByZoneAndClass: несколько классов (ранговые квесты «подарки» часто не Normal).
 	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest" },
-	delayDamage = 0.125,
+	delayDamage = 0.16,
 	farmRadius = 420,
 	preferClosest = true,
-	--- Не чаще 1 раз за интервал собирать кандидатов фарма (AllByZoneAndClass × классы — тяжело на каждом Heartbeat). 0 = каждый кадр.
 	farmCandidateScanInterval = 0.12,
-	--- Орбы
 	collectOrbs = true,
 	orbCollectInterval = 0.35,
 	maxOrbBatch = 80,
-	--- Если ключи орбов копятся без Clear — сброс (антиутечка)
 	orbAccumulatorMaxKeys = 4000,
-	--- Радиус подбора орбов на клиенте (Orb.CollectDistance / DefaultPickupDistance / CombineDistance)
 	orbMagnetBoost = true,
 	orbMagnetMinDistance = 800,
-	--- Дополнительно слать Orbs: Collect по id из Fired (часто не нужно при orbMagnetBoost)
 	orbRemoteCollectBatch = false,
-	--- Клейм наград ранга
 	autoClaimRankRewards = true,
 	claimInterval = 0.35,
 	claimDebounce = 0.28,
-	--- После полного клейма — попытка rank up через GUI
 	autoRankUpGui = true,
 	rankUpGuiInterval = 1.2,
-	--- Туториал: скрывает стрелки, завязанные на ActiveGoalArrow (см. Tutorial)
+	autoDismissRankUpUi = true,
+	rankUpDismissInterval = 0.32,
+	autoDismissMasteryPerkUi = true,
+	masteryPerkDismissInterval = 0.32,
+	autoEnableAutoFarm = true,
+	autoFarmEnableInterval = 15,
+	autoFarmReenableOnZoneChange = true,
+	farmSignalNearbyEnabled = false,
+	farmMultiHitCount = 1,
 	tutorialHideGoalArrow = true,
-	--- Не вызывать SetAttribute ActiveGoalArrow каждый кадр
 	tutorialArrowInterval = 2,
-	--- Следующая зона мира: Invoke Zones_RequestPurchase (как Gates / Zone Progress Bar)
 	autoBuyZones = true,
-	--- Если true — не ждать ZoneCmds.HasCompletedNextZoneQuests() (можно кинуть Invoke раньше клиентских квестов гейта)
 	ignoreZoneGateQuests = false,
 	zonePurchaseInterval = 0.55,
-	--- Телепорт на макс. зону: только клиентский PivotTo к PERSISTENT/Teleport (без Teleports_RequestTeleport — без пушки и попапа «You're already here!»).
+	teleportToMaxFarmZone = true,
 	teleportMaxZoneClientPivotOnly = true,
-	--- Если уже в нужной зоне, но далеко от точки телепорта — только докрутить pivot, без Invoke
-	teleportClientPivotWhenSameZone = true,
-	--- Считать «уже на месте», если HRP в радиусе от GetTeleportPartLocation(зона)
+	teleportClientPivotWhenSameZone = false,
 	teleportClientPivotNearStuds = 32,
-	--- Квест: телепорт к яйцу — тоже только pivot (без серверного Teleports_RequestTeleport)
 	questEggTeleportClientPivotOnly = true,
 	teleportInterval = 10,
 	teleportPivotYOffset = 3,
-	--- Несколько Pivot на RenderStepped после инвока (перебить cannon-VFX)
 	teleportPivotRepeatCount = 5,
 	teleportPivotRepeatDelayFrames = 1,
-	--- Осторожно: на время повторных Pivot временно сбрасывает Variables.IsUsingCannon
 	teleportCannonWorkaround = false,
-	--- UI ребитха: только getconnections/firesignal на кнопке «Click for more» (без мыши экзекьютора)
 	autoDismissRebirthUi = true,
 	rebirthDismissInterval = 0.28,
-	--- Хэтч: пауза после pivot перед Invoke (сервер видит позицию); флаг hatchBusy держит телепорт/фарм
 	hatchAfterPivotDelay = 0.38,
 	hatchBusyHoldSeconds = 2.6,
-	--- Яйцо прогресса: если в тексте квеста нет конкретного яйца — брать лучшее яйцо физически в текущей зоне
 	preferZoneEggWhenProgress = true,
-	--- Если квест про конкретное яйцо и стенд в другой зоне — сначала Teleports_RequestTeleport на зону яйца
 	questEggTeleportIfWrongZone = true,
-	--- Продвинутый фарм: цели и урон по breakable якорю макс. зоны (персонаж может быть у квеста/яйца)
 	advancedRemoteFarm = true,
 	remoteFarmUseMaxZoneAnchor = true,
 	remoteFarmRadiusMultiplier = 2.4,
 	remoteFarmOrbMagnetMultiplier = 1.45,
-	--- Если true — НЕ вызывать Teleports_RequestTeleport на макс. зону (остаёшься в текущей локации).
 	remoteFarmSkipMaxZoneTeleport = false,
-	--- Если true — не тянуть к BREAKABLE_SPAWNS.Main в макс. зоне (имеет смысл только вместе с телепортом в ту зону).
 	remoteFarmSkipBreakablePull = false,
-	--- Общая прогрессия: если curZone ~= maxOwnedZone — ВСЕГДА телепортить на maxOwned (перебивает remoteFarmSkipMaxZoneTeleport).
 	forceTeleportWhenBehindMaxZone = true,
-	--- Зелёная кнопка возврата в актуальную зону (когда разблокированы области выше спавна)
 	autoClickReturnToAreaButton = true,
 	returnToAreaClickInterval = 2,
-	--- Другой Experience Place (Tech World и т.д.): клиент полностью новый — после телепорта снова выполнить скрипт (UNC queue_on_teleport). Нужен crossPlaceReloadUrl (raw) или crossPlaceReloadReadfile.
 	crossPlaceAutoReload = true,
-	crossPlaceReloadUrl = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/hello/.lua",
+	crossPlaceReloadUrl = "",
 	crossPlaceReloadReadfile = "",
 	crossPlaceReloadDelaySec = 3,
-	--- В текущей макс. зоне подтягивать персонажа к BREAKABLE_SPAWNS.Main (ZonesUtil), центр поля брейкаблов
 	teleportToBreakableFarmCenter = true,
 	farmBreakablePullInterval = 1.15,
 	farmBreakableMinDist = 20,
 	farmBreakableYOffset = 5,
-	--- Порядок имён Part в INTERACT/BREAKABLE_SPAWNS (как в Studio: Main, Easy, VIP…)
 	farmBreakableSpawnPartPriority = { "Main", "Easy", "VIP" },
-	--- Ассистент «целей» как у стрелки квеста (GoalCmds + приоритеты из клиента)
+	farmExplosiveBreakableAssist = true,
+	farmExplosiveAssistInterval = 2.8,
+	farmExplosiveAssistRequireWorld2 = true,
+	farmExplosiveAssistWhenDealingDamage = true,
+	farmExplosiveAssistPullToFarmBox = true,
+	farmExplosiveAssistPreferOrder = { "TNT Crate", "TNT" },
 	questAssistEnabled = true,
 	questAssistInterval = 0.65,
-	--- Телепорт персонажа к первому мировому Target из Displays (яйцо, машина, зона…)
 	questTeleportToTarget = true,
 	questTeleportMinDist = 14,
 	questTeleportYOffset = 6,
-	--- Если у цели HUD есть мировой Target (Part/Model) — не звать телепорт на макс. зону
 	questAssistSkipFarmTeleportWhenObjective = true,
-	--- false: не блокировать квест при GUI.Transition() (частый «NO environment … GUITransition» без подхода к ракете)
 	questBlockOnGuiTransition = false,
 	questAutoUnlockEgg = true,
-	--- HatchingCmds: Enable(AUTO) + SetupEgg/SetupCustomEgg + AttemptHatch (Invoke Eggs_RequestPurchase)
+	questEggUnlockCooldown = 8,
 	questAutoHatch = true,
-	--- Если false — крутить хэтч только когда генератор цели в имени содержит "Egg"
 	questAutoHatchAnytime = false,
 	questHatchAssistInterval = 1.1,
-	--- Infinity Egg только если явно разрешено или текст цели содержит ключевые слова
+	hatchClampToAffordableAmount = true,
+	hatchPreferAffordableEggInZone = true,
+	hatchPreferAffordableEggGlobally = true,
 	allowInfinityEggWithoutQuest = false,
 	infinityEggQuestKeywords = { "infinity", "infinity egg", "infinityegg" },
-	--- Сброс кулдаунов покупок по ключевым словам в тексте цели HUD
 	questAssistObjectiveKeywords = true,
-	--- Авто-зелья / фрукты / расходники (ConsumableItem). Всегда из Heartbeat при enabled (не требуют questAssist).
+	questSpawnInventoryBreakables = true,
+	questSpawnInventoryBreakablesInterval = 2.75,
+	-- Не расходовать Misc, если текст цели про мировые спавны («randomly spawned», «in best area»).
+	questSpawnInventorySkipWorldSpawnObjectives = true,
+	-- Тексты целей Rank (справа) без GoalCmds — скрейп GUI.Rank / GoalsSide для Comet/Jar спавна при no_goal.
+	questScrapeRankGoalsForMiscSpawn = true,
+	questRankGoalsGuiScrapeInterval = 2.0,
+	questRankGoalsGuiScrapeMaxLabels = 320,
+	-- Синт-цели Rank→GetEnterPart (Instances): выкл. — не тянуть к Fishing/Dig-порталам, идём дальше по другим квестам.
+	questSynthRankTrackedFromGui = false,
+	-- RankGuiSynth (GetEnterPart): не Leave из инстанса и не Return-to-max, пока TTL активен.
+	questSynthRankProtectInstanceFromAutoLeave = true,
+	questSynthRankSuppressReturnToArea = true,
+	questSynthRankProtectTtlSeconds = 180,
+	questTeleportCanTeleportLogThrottleSeconds = 15,
 	autoConsumeBuffs = true,
-	--- false: не жать баффы, пока игрок в инстансе (TNT/бусты в минииграх)
 	autoConsumeBuffsInInstance = false,
-	--- Раз в интервал — зелье (UID стака + кол-во, см. ActionMenu.Potion)
 	questConsumePotions = true,
 	questConsumePotionsInterval = 1.35,
-	--- true: как раньше — если хоть одно зелье уже активно (Save.Potions), не пить новые
 	questConsumePotionsOnlyWhenNoneActive = false,
-	--- Крупные порции при перке Potions/BulkConsume (5/10/25/50/100)
 	questConsumePotionBulk = true,
-	--- true: среди стаков выбирать максимальный tier (pairs() по инвентарю даёт случайный порядок и часто сначала I–II уровень)
 	questConsumePotionsPreferMaxTier = true,
+	questConsumeHonorObjectivePotionTier = true,
+	-- При no_goal брать текст «Use Tier I Potions» из PlayerGui + не блокировать Use из‑за активного баффа того же типа.
+	questConsumeScrapeGuiForPotionTier = true,
+	questConsumeGuiScrapeInterval = 1.85,
+	questConsumeGuiScrapeMaxLabels = 500,
+	questConsumeBypassActiveBuffForTierForced = true,
+	questConsumeIgnoreOnlyWhenNoneWhenTierForced = true,
 	questConsumeFruits = true,
 	questConsumeFruitsInterval = 1.5,
-	--- За тик не больше N штук одного фрукта (очередь мастери)
 	questConsumeFruitMaxAtOnce = 4,
-	--- Consumables_Consume (токены, «Ultra Pet Token Boost», TNT в майнинге — в blocklist)
 	autoConsumeConsumables = true,
 	autoConsumeConsumablesInterval = 2.2,
 	autoConsumeConsumableBlocklist = {
@@ -187,12 +172,9 @@ local DEFAULT = {
 		"Mining Bejeweled TNT Crate",
 		"TNT",
 	},
-	--- Цель HUD может указывать на GuiButton (ранг, машины, сайд-табы, plaza…)
 	questClickGuiTargets = true,
 	questGuiClickInterval = 0.38,
-	--- Если true и имя генератора из списка questGoalGeneratorPrioritySubstrings — не применять minigame-хьюристику (но учитывать questBlockedObjectiveSubstrings).
 	questPrioritizeListedGoalGenerators = true,
-	--- Подстрочники имён генераторов GoalCmds.Modules.* (совпадает если string.find по нижнему регистру)
 	questGoalGeneratorPrioritySubstrings = {
 		"eggs",
 		"zone",
@@ -222,13 +204,11 @@ local DEFAULT = {
 		"fishingevent",
 		"farmingworld",
 		"halloweenworld",
-		--- подмодули FarmingWorld (имена как ModuleScript: PlaceFarmingEgg, SpendFarmingToken, …)
 		"placefarm",
 		"claimfarm",
 		"claimfarming",
 		"spendfarm",
 		"farmingtoken",
-		--- подмодули HalloweenWorld (CamelCase → lower без пробелов: HalloweenTrickOrTreat и т.д.)
 		"halloweentrick",
 		"placehalloween",
 		"newhalloween",
@@ -238,15 +218,31 @@ local DEFAULT = {
 		"sellfish",
 		"buyboat",
 	},
-	--- Экипировать первый свободный слот энчантом из инвентаря (Enchants_Equip)
 	questEquipEnchants = true,
 	questEquipEnchantInterval = 2.2,
-	--- Квест «place / use a flag»: после входа в dotted box (IsInDottedBox) — FlexibleFlagCmds.Consume (см. Studio FlexibleFlagCmds)
+	dynamicEnchantLoadout = true,
+	enchantFarmPriority = {
+		"Coins",
+		"Strong Pets",
+		"Tap Power",
+		"Criticals",
+		"Treasure Hunter",
+		"Diamonds",
+		"Magnet",
+		"Walkspeed",
+	},
+	enchantHatchPriority = {
+		"Lucky Eggs",
+		"Rainbow Eggs",
+		"Super Shiny Hunter",
+		"Shiny Hunter",
+		"Huge Hunter",
+		"Fortune",
+		"Fruity",
+	},
 	questAutoPlaceFlag = true,
 	questPlaceFlagInterval = 2,
-	--- Если GoalGenerators не отдают цель (в логе no_goal / valid=0), всё равно пробовать флаг в dotted box — иначе квест «Use a flag» никогда не триггерится.
 	questAutoPlaceFlagWithoutTrackedGoal = true,
-	--- Порядок перебора флагов, если в тексте квеста нет конкретного имени
 	questFlagNameFallbackOrder = {
 		"Strength Flag",
 		"Magnet Flag",
@@ -254,31 +250,24 @@ local DEFAULT = {
 		"Shiny Flag",
 		"Rainbow Flag",
 	},
-	--- При hideEggHatching: если true — не жать «Click to open!» (часто яйцо визуально не открывается; в Studio цепочка идёт через UI/HatchingCmds).
 	skipEggGuiClickWhenHiddenHatch = false,
-	--- Авто-покупка слотов яиц (Egg Slots Machine → EggHatchSlotsMachine_RequestPurchase)
 	autoBuyEggSlots = true,
 	eggSlotPurchaseInterval = 1,
 	eggSlotMaxPurchasesPerPulse = 3,
-	--- Если true — пробовать EggHatchSlotsMachine_RequestPurchase и для UNLOCKED (в UI кнопка не вешается; сервер может принять очередной бандл)
 	eggSlotPurchaseTryUnlocked = true,
-	--- Авто-покупка слотов питомцев (инвок как у GUI машины)
 	autoBuyEquipSlots = true,
 	equipSlotPurchaseInterval = 1,
 	equipSlotMaxPurchasesPerPulse = 3,
-	--- Авто-покупка ближайшего доступного апгрейда зоны (квест «купи апгрейд»)
+	machinePurchaseFailureCooldown = 6,
+	machineNotOwnedCooldown = 30,
 	autoBuyCheapestUpgrade = true,
 	upgradePurchaseInterval = 1.5,
-	--- Авто садик (Daycare)
 	autoDaycare = true,
-	autoDaycareInterval = 5,
-	--- Пропускать (игнорировать) квесты на миниигры (инстансы), чтобы бот в них не заходил
+	autoDaycareInterval = 20,
+	autoDaycareMaxClaimsPerTick = 1,
 	questIgnoreMinigames = true,
-	--- false: генератор Instances ведёт к порталу — телепорт/промпт к цели (ранг часто даёт вход в активности)
 	questIgnoreInstancesGenerator = false,
-	--- Если Callback вернул Displays, но Priority=nil (часто при пустом Goals.Priorities в билде) — считать приоритет 0
 	questNormalizeNilGoalPriority = true,
-	--- Подстроки в тексте цели (HUD), при совпадении не взаимодействовать с Target (рыбалка, ивенты)
 	questMinigameObjectiveSubstrings = {
 		"fishing",
 		"digsite",
@@ -299,9 +288,15 @@ local DEFAULT = {
 		"hoverboard",
 		"enchant empowering",
 	},
-	--- По умолчанию пусто: квесты на fuse/rainbow/gold machine и карты не блокируются (ранговая прокачка)
 	questBlockedObjectiveSubstrings = {},
-	--- Выйти из инстанса через InstancingCmds.Leave, если id в списке (имена как в GoalCmds.Modules.Instances)
+	-- AdvancedDigsite: без лопаты из Fossil merchant клиент кидает Message — спам промпта входа бессмысленен.
+	-- Валюта покупки — не Diamonds: отдельный слот HUD "Digsite" = CurrencyCmds/Get("Digsite"), копится в инстансе Digsite
+	-- (DigsiteChests / руды в __DIRECTORY, см. Currency | Digsite + DigsiteMerchant).
+	questBlockDigsiteEntryWithoutShovel = true,
+	-- Блокировать только Advanced (базовый Digsite нужен чтобы фармить Digsite coins и купить Normal Shovel).
+	questBlockAdvancedDigsiteOnlyWithoutShovel = true,
+	-- Если true: лопата "Flimsy" не считается достаточной для входа Advanced (сообщение игры про merchant).
+	questAdvancedDigsiteFlimsyShovelIsInsufficient = true,
 	questAutoLeaveBlockedInstances = true,
 	questBlockedInstanceIds = {
 		"Fishing",
@@ -324,26 +319,10 @@ local DEFAULT = {
 		"EnchantEmpoweringInstance",
 		"Minefield",
 	},
-	--- "off" — без движка миниигр. "skip" — квест-скип + Leave из списка.
-	--- "complete" — квест ведёт в инстансы (см. minigameAllowQuestInstancesWhenComplete), автопрохождение для minigameAutoPlayInstanceIds.
 	minigameAssistMode = "skip",
-	--- Непустая таблица: только эти ID для принудительного Leave (иначе используется questBlockedInstanceIds).
 	instanceIdsForceLeave = nil,
-	--- Какие инстансы обрабатывать в режиме "complete" (обби-эвристика, wave2-хендлеры). Minefield — только Leave.
-	minigameAutoPlayInstanceIds = {
-		"SpawnObby",
-		"IceObby",
-		"JungleObby",
-		"PyramidObby",
-		"HoverboardTechObby",
-		"MillionaireRun",
-		"Fishing",
-		"AdvancedFishing",
-		"FishingEvent",
-		"Digsite",
-		"AdvancedDigsite",
-		"ChestRush",
-	},
+	-- Авто-прохождение мини-игр (obby/dig/fish/…) по умолчанию выключено — список пустой.
+	minigameAutoPlayInstanceIds = {},
 	minigameAllowQuestInstancesWhenComplete = true,
 	minigameAssistTickInterval = 0.16,
 	minigameStuckLeaveSeconds = 90,
@@ -354,71 +333,134 @@ local DEFAULT = {
 	minigameObbyFireChildPrompts = true,
 	minigameWave2SearchDepth = 14,
 	minigameWave2MaxPromptsPerTick = 8,
-	--- Хэтч лучшего/зонного яйца, если нет валидной стрелки / скип цели — иначе только через квест
 	autoHatchProgressWithoutQuest = true,
-	--- Хэтч без валидной стрелки: не чаще раз в N сек (иначе при no_goal бот залипает только на яйцах)
-	autoHatchProgressCooldown = 18,
-	--- Если hatchBusy не сбросился после hold+grace — сбросить (застревание телепорта/фарма)
+	autoHatchProgressWhenNonEggQuest = true,
+	autoHatchProgressCooldown = 10,
+	questMachineGuiStuckMaxClicks = 22,
+	questMachineGuiStuckWindowSec = 45,
+	questMachineGuiStuckGeneratorSubstrings = {
+		"upgrade potions machine",
+		"upgrade enchants machine",
+	},
+	hatchReserveCurrencyForNextZone = true,
+	-- Если true: при progress-only вылупе НЕ резервировать монету на покупку следующей зоны (иначе hatchAmt часто 0 — «яйца не открываются»).
+	hatchReserveSkipForProgressOnly = true,
+	hatchNextZoneReserveMultiplier = 1.05,
+	hatchReserveForNextZoneEvenWhenQuestIncomplete = true,
 	hatchBusyWatchdogExtra = 10,
-	--- Периодически экипировать лучших петов (PetCmds.EquipBest → Pets_EquipBest)
 	autoEquipBestPetsEnabled = true,
 	autoEquipBestPetsInterval = 14,
-	--- true: не вызывать HatchingCmds.SetupEgg/AttemptHatch, а сразу Eggs_RequestPurchase / CustomEggs_Hatch (сервер всё равно может показать оверлей яйца).
+	autoPickStarterPetsEnabled = true,
+	autoPickStarterPet1 = "Axolotl",
+	autoPickStarterPet2 = "Cat",
+	autoPickStarterPetsInterval = 1.5,
 	hideEggHatching = true,
-	--- Жать «Click to open!» на оверлее открытия (PlayerGui), пока виден текст
 	autoClickEggOpeningPrompt = true,
-	eggOpeningPromptClickInterval = 0.32,
-	--- При hideEggHatching — чаще жать оверлей (меньше задержка после Eggs_RequestPurchase)
-	eggOpeningPromptIntervalHiddenHatch = 0.14,
-	--- После скрытого инвока — короткие повторы клика (обход throttling одного кадра)
-	eggOpeningPostInvokeBurstCount = 8,
-	eggOpeningPostInvokeBurstDelay = 0.09,
-	--- Если у надписи нет GuiButton — кликнуть мышью внизу экрана (как в игре часто ловится оверлей)
-	--- Устарело: центр экрана через мышь не используется
+	eggOpeningOnlyWhenOpening = true,
+	eggOpeningPromptClickInterval = 0.65,
+	eggOpeningPromptIntervalHiddenHatch = 0.25,
+	eggOpeningPostInvokeBurstCount = 4,
+	eggOpeningPostInvokeBurstDelay = 0.12,
 	eggOpeningPromptCenterFallback = false,
-	--- Минимум между обходами PlayerGui для «Click to open» (GetDescendants очень дорогой)
 	eggOpeningGuiScanInterval = 0.22,
-	--- Перед инвоками телепорт на машину / яйцо (сервер режет дистанцию)
 	pivotBeforeRemotePurchases = true,
 	machineSearchRadius = 2500,
 	machineTeleportYOffset = 6,
 	hatchTeleportNearEgg = true,
 	hatchEggProximity = 36,
 	hatchEggPivotYOffset = 8,
-	--- После успешной покупки слота: закрыть вкладку, если TabController.Get() совпадает с машиной
 	autoCloseMachineTabs = true,
 	autoCloseTabDelay = 0.22,
-	--- Если nil — используется список по умолчанию (имена как в AddOpenListener машин)
 	autoCloseMachineTabIds = nil,
 	autoCloseTabUseForce = false,
-	--- Executor: после Activated — getconnections + firesignal на MouseButton1/2 (без мыши)
 	executorGuiClickFallbacks = true,
-	--- Квест Target: fireclickdetector / firetouchinterest (агрессивнее, по умолчанию выкл.)
 	questUseFireClickDetector = false,
 	questUseFireTouchInterest = false,
-	--- Квесты перехода между мирами: в клиенте Interact → Message.New(OK?) → Network.Fire. fireProximityPrompt модалку не жмёт — дублируем Fire.
 	questTravelWorldDirectNetwork = true,
 	questTravelWorldDirectNetworkInterval = 2.6,
-	--- RequestTechRocket: при Rebirths < 4 клиент ставит только гейт (см. Tech Rocket.lua). Отключите проверку только если уверены в Save.
 	questTravelTechRequireRebirth4 = true,
-	--- После forceClickBreakable — попытка fireclickdetector на модели
 	farmUseFireClickDetectorFallback = false,
-	--- Лог всех Network.Invoke через hookfunction (отладка)
 	debugLogInvokes = false,
-	--- Сервер закрывает сокет клиентскому скриптом этого не отменить. Часть античитов вызывает LocalPlayer:Kick() с локалки — см. kickGuardTryBlockClientKick (+ __namecall).
-	kickGuardTryBlockClientKick = false,
+	kickGuardTryBlockClientKick = true,
 	kickGuardKickLog = true,
-	--- Устарело: синтетическая мышь отключена навсегда в этом скрипте (ключ не читается).
+	kickGuardBlockTeleportToLobby = false,
+	kickGuardBlockTeleportToPlaceIds = {},
 	executorVirtualGuiClick = false,
-	--- Редкие события (успешный телепорт, клейм, хэтч)
 	log = false,
-	--- Подробная трассировка в консоль (F9): pulse, фарм, квест, ошибки
 	verboseLog = true,
+	fileLogEnabled = true,
+	fileLogPath = "AutoRank_debug.log",
+	fileLogResetOnStart = true,
+	fileLogVerbose = true,
 	traceInterval = 4,
-	--- После успешной загрузки модулей — не вызывать ensureModules каждый Heartbeat. 0 = каждый кадр.
 	ensureModulesInterval = 0.35,
-	--- warn при падении heartbeat / runQuestAssistPulse / ensureModules
+	ensureModulesInitialDelaySec = 3,
 	heartbeatErrorWarn = true,
+
+	disableBuiltInAutoTapper = true,
+	disableBuiltInAutoTapperInterval = 2.0,
+
+	autoRedeemFreeGifts = true,
+	freeGiftsCheckInterval = 2,
+	freeGiftsMaxClaimsPerTick = 12,
+
+	autoOpenInstantLootboxes = true,
+	autoOpenNonInstantLootboxes = false,
+	lootboxOpenInterval = 1.5,
+	lootboxBatchAmount = 25,
+
+	autoConsumeEnabled = true,
+	consumablesTickInterval = 2,
+	consumeFlagsHasty = true,
+	consumeFlagsStrength = true,
+	consumeFlagsMagnet = true,
+	consumeSprinklers = true,
+	consumeDamagePotion = true,
+	consumeRainbow = false,
+	consumeShiny = false,
+	consumeHugeHunter = false,
+	consumeReserveHasty = 0,
+	consumeReserveStrength = 0,
+	consumeReserveMagnet = 0,
+	consumeReserveSprinkler = 0,
+	consumeReserveDamagePotion = 10,
+	consumeReserveRainbow = 20,
+	consumeReserveShiny = 20,
+	consumeReserveHugeHunter = 5,
+	consumeFlagIdHasty = "Hasty Flag",
+	consumeFlagIdStrength = "Strength Flag",
+	consumeFlagIdMagnet = "Magnet Flag",
+	consumeSprinklerId = "Breakable Sprinkler",
+	consumePotionIdDamage = "Damage Potion",
+	consumePotionIdRainbow = "Rainbow Potion",
+	consumePotionIdShiny = "Shiny Potion",
+	consumePotionIdHugeHunter = "Huge Hunter Potion",
+	consumeTrustServerInventory = false,
+	consumeFailureCooldown = 8,
+	consumeDebugLog = false,
+
+	netRateLimitEnabled = true,
+	netRateLimitPerSec = 18,
+	netRateLimitWindow = 1.0,
+	netRateLimitDefaultPriority = 5,
+	netRateLimitFarmPriority = 1,
+	netRateLimitPurchasePriority = 10,
+
+	petsAlwaysFarmEnabled = true,
+	petsAlwaysFarmTickInterval = 8.0,
+	petsAlwaysFarmListenForceDisable = true,
+
+	hbSchedulerEnabled = true,
+	hbIntervalDealDamage = 0,
+	hbIntervalDismissUI = 0.32,
+	hbIntervalAutoBuy = 0.5,
+	hbIntervalEquipPets = 2.0,
+	hbIntervalConsumables = 2.0,
+	hbIntervalFreeRewards = 2,
+	hbIntervalLootbox = 1.5,
+	hbIntervalQuestAssist = 0.65,
+	hbIntervalAutoFarmEnable = 1.0,
+	hbIntervalEnsureModules = 0.35,
 }
 
 local G = (getgenv and getgenv()) or _G
@@ -428,23 +470,102 @@ for k, v in pairs(DEFAULT) do
 		G.AutoRank[k] = v
 	end
 end
+if G.AutoRank.safeMode ~= false then
+	G.AutoRank.netRateLimitPerSec = math.min(tonumber(G.AutoRank.netRateLimitPerSec) or 18, 18)
+	G.AutoRank.delayDamage = math.max(tonumber(G.AutoRank.delayDamage) or 0.16, 0.16)
+	G.AutoRank.farmMultiHitCount = 1
+	G.AutoRank.farmSignalNearbyEnabled = false
+	G.AutoRank.autoDaycareInterval = math.max(tonumber(G.AutoRank.autoDaycareInterval) or 20, 20)
+	G.AutoRank.autoDaycareMaxClaimsPerTick = 1
+	G.AutoRank.eggSlotMaxPurchasesPerPulse = math.min(tonumber(G.AutoRank.eggSlotMaxPurchasesPerPulse) or 3, 1)
+	G.AutoRank.equipSlotMaxPurchasesPerPulse = math.min(tonumber(G.AutoRank.equipSlotMaxPurchasesPerPulse) or 3, 1)
+	G.AutoRank.consumablesTickInterval = math.max(0.75, math.min(tonumber(G.AutoRank.consumablesTickInterval) or 2, 2))
+	G.AutoRank.consumeFailureCooldown = math.max(4, math.min(tonumber(G.AutoRank.consumeFailureCooldown) or 8, 8))
+	G.AutoRank.freeGiftsCheckInterval = math.max(1, math.min(tonumber(G.AutoRank.freeGiftsCheckInterval) or 2, 2))
+	G.AutoRank.hbIntervalFreeRewards = math.max(1, math.min(tonumber(G.AutoRank.hbIntervalFreeRewards) or 2, 2))
+	G.AutoRank.hbIntervalConsumables = math.max(0.75, math.min(tonumber(G.AutoRank.hbIntervalConsumables) or 2, 2))
+	G.AutoRank.consumeDebugLog = false
+	G.AutoRank.eggOpeningPromptClickInterval = math.max(tonumber(G.AutoRank.eggOpeningPromptClickInterval) or 0.65, 0.65)
+	G.AutoRank.eggOpeningPostInvokeBurstCount = math.min(tonumber(G.AutoRank.eggOpeningPostInvokeBurstCount) or 4, 4)
+	G.AutoRank.autoPickStarterPetsInterval = math.max(tonumber(G.AutoRank.autoPickStarterPetsInterval) or 1.5, 1.5)
+	G.AutoRank.petsAlwaysFarmTickInterval = math.max(tonumber(G.AutoRank.petsAlwaysFarmTickInterval) or 8, 8)
+	G.AutoRank.autoFarmEnableInterval = math.max(tonumber(G.AutoRank.autoFarmEnableInterval) or 15, 15)
+	G.AutoRank.consumeTrustServerInventory = false
+end
+
+--[[ GoalCmds callbacks often fail in executor ("Cannot require …"); tracked quest stays nil.
+   Old safeMode forced autoHatchProgressWithoutQuest=false → no hatch at all. One-time bump for existing saves.]]
+do
+	local v = G.AutoRank._arNoQuestHatchMigrate or 0
+	if v < 1 then
+		G.AutoRank.autoHatchProgressWithoutQuest = true
+		G.AutoRank._arNoQuestHatchMigrate = 1
+	end
+end
 
 local function cfg()
 	return G.AutoRank
 end
 
-local lastVerbosePulseTick = 0
+local Ticks = {}
+Ticks.lastVerbosePulseTick = 0
 local traceThrottleAt = {}
+local warnThrottleAt = {}
+
+function AR.Log.stringify(...)
+	local out = {}
+	for i = 1, select("#", ...) do
+		local v = select(i, ...)
+		if typeof and typeof(v) == "Instance" then
+			out[#out + 1] = v:GetFullName()
+		elseif type(v) == "table" then
+			out[#out + 1] = "<table:" .. tostring(v) .. ">"
+		else
+			out[#out + 1] = tostring(v)
+		end
+	end
+	return table.concat(out, " ")
+end
+
+function AR.Log.write(kind, ...)
+	if not cfg().fileLogEnabled then
+		return
+	end
+	local ap = appendfile
+	if type(ap) ~= "function" then
+		return
+	end
+	local path = cfg().fileLogPath or "AutoRank_debug.log"
+	local msg = string.format("[%.3f][%s] %s\n", tick() - autoRankLoadTick, tostring(kind), AR.Log.stringify(...))
+	pcall(ap, path, msg)
+end
+
+function AR.Log.resetFile()
+	if not cfg().fileLogEnabled or cfg().fileLogResetOnStart == false then
+		return
+	end
+	if type(writefile) ~= "function" then
+		return
+	end
+	local path = cfg().fileLogPath or "AutoRank_debug.log"
+	pcall(writefile, path, string.format("[0.000][boot] AutoRank file log reset version=%s\n", tostring(AUTO_RANK_RUNTIME_VERSION or "?")))
+end
+
+AR.Log.resetFile()
 
 local function log(...)
 	if cfg().log then
 		print("[AutoRank]", ...)
 	end
+	AR.Log.write("log", ...)
 end
 
 local function trace(cat, ...)
 	if cfg().verboseLog then
 		print("[AutoRank][" .. tostring(cat) .. "]", ...)
+	end
+	if cfg().fileLogVerbose ~= false then
+		AR.Log.write(cat, ...)
 	end
 end
 
@@ -461,17 +582,35 @@ local function traceThrottled(key, intervalSec, cat, ...)
 	trace(cat, ...)
 end
 
+local function logThrottled(key, intervalSec, ...)
+	local now = tick()
+	local iv = intervalSec or 10
+	if now - (traceThrottleAt[key] or 0) < iv then
+		return
+	end
+	traceThrottleAt[key] = now
+	log(...)
+end
+
 local function warnErr(where, err)
+	local now = tick()
+	local key = tostring(where) .. ":" .. tostring(err)
+	if now - (warnThrottleAt[key] or 0) < 5 then
+		AR.Log.write("ERR_THROTTLED", where, err)
+		return
+	end
+	warnThrottleAt[key] = now
 	local msg = "[AutoRank][ERR] " .. tostring(where) .. ": " .. tostring(err)
 	if cfg().heartbeatErrorWarn ~= false then
 		warn(msg)
 	end
+	AR.Log.write("ERR", where, err)
 	if cfg().verboseLog and debug and debug.traceback then
 		warn(debug.traceback(nil, 2))
+		AR.Log.write("traceback", debug.traceback(nil, 2))
 	end
 end
 
---- UNC / executor: единые точки входа + безопасный pcall.
 local Exec = {}
 
 local function execResolve(...)
@@ -535,7 +674,6 @@ local function runRBXScriptConnections(signal)
 	return fired
 end
 
---- firesignal / FireSignal (UNC) — без движения системной/игровой мыши.
 local function execFireRBXScriptSignal(signal)
 	if not signal then
 		return false
@@ -548,7 +686,6 @@ local function execFireRBXScriptSignal(signal)
 	return ok
 end
 
---- Activated → firesignal(Activated) → (опц.) MouseButton1/2 через getconnections + firesignal. Синтетическая мышь не используется.
 local function clickGuiButtonRobust(btn)
 	if not btn or not btn:IsA("GuiButton") then
 		return false
@@ -576,7 +713,6 @@ local function clickGuiButtonRobust(btn)
 	return false
 end
 
---- PS99 Egg Opening Frontend: ожидание «Click to open!» висит на LocalPlayer.Mouse.Button1Down (+ геймпад), не на GuiButton.
 local function tryFireEggOpenPrimaryInput()
 	local mouse = LocalPlayer:GetMouse()
 	if not mouse then
@@ -605,15 +741,252 @@ local ClientFolder = ReplicatedStorage:WaitForChild("Library"):WaitForChild("Cli
 
 local Network, BreakableFrontend, Save, RankCmds, MapCmds, InstancingCmds, GUI, Directory, RanksUtil, FFlags
 local ZoneCmds, TeleportMapCmds, CurrencyCmds, Balancing, RebirthCmds, InstanceZoneCmds
-local GoalCmds, Functions, Variables, TabController, InventoryCmds
+local GoalCmds, Variables, TabController, InventoryCmds
 local HatchingCmds, EggCmds, HatchingTypes, PotionCmds, FruitCmds, EggsUtil
 local EnchantCmds
 local ZonesUtil
 local PetEquipCmds, PetCmds, MachineCmds, UpgradeCmds
+local PetNetworking
 local Gamepasses, CustomEggsCmds
 local DaycareCmds, DaycareLoot
 local FlexibleFlagCmds
 local MasteryCmds, ConsumableCmds
+local AutoFarmCmds, Signal
+
+local function safeIsInInstance(instanceId)
+	if not InstancingCmds or type(InstancingCmds.IsInInstance) ~= "function" then
+		return false, true
+	end
+	local ok, res = pcall(InstancingCmds.IsInInstance, instanceId)
+	return ok and res == true, ok
+end
+
+local function safeCurrentZone()
+	if not MapCmds or type(MapCmds.GetCurrentZone) ~= "function" then
+		return nil
+	end
+	local ok, res = pcall(MapCmds.GetCurrentZone)
+	if ok then
+		return res
+	end
+	return nil
+end
+
+local function safeInDottedBox()
+	if not MapCmds or type(MapCmds.IsInDottedBox) ~= "function" then
+		return false
+	end
+	local ok, res = pcall(MapCmds.IsInDottedBox)
+	return ok and res == true
+end
+
+do
+local netRecentTimestamps = {}
+local netRecentSize = 0
+
+local function netPriorityFor(name)
+	if not name then
+		return tonumber(cfg().netRateLimitDefaultPriority) or 5
+	end
+	local n = string.lower(tostring(name))
+	if string.find(n, "purchase", 1, true)
+		or string.find(n, "teleport", 1, true)
+		or string.find(n, "claim", 1, true)
+		or string.find(n, "rebirth", 1, true)
+		or string.find(n, "ranks_", 1, true)
+		or string.find(n, "redeem free gift", 1, true)
+		or string.find(n, "lootbox: open", 1, true)
+		or string.find(n, "pick starter pets", 1, true)
+	then
+		return tonumber(cfg().netRateLimitPurchasePriority) or 10
+	end
+	if string.find(n, "blockworlds", 1, true)
+		or string.find(n, "fishingevent_", 1, true)
+		or string.find(n, "playerdealdamage", 1, true)
+		or string.find(n, "orbs:", 1, true)
+		or string.find(n, "tnt", 1, true)
+		or string.find(n, "_consume", 1, true)
+		or string.find(n, "comet_spawn", 1, true)
+		or string.find(n, "coinjar_spawn", 1, true)
+		or string.find(n, "itemjar_spawn", 1, true)
+		or string.find(n, "minipinata_consume", 1, true)
+		or string.find(n, "miniluckyblock_consume", 1, true)
+		or string.find(n, "giftbag_open", 1, true)
+	then
+		return tonumber(cfg().netRateLimitFarmPriority) or 1
+	end
+	return tonumber(cfg().netRateLimitDefaultPriority) or 5
+end
+
+local function netWithinRate()
+	if cfg().netRateLimitEnabled == false then
+		return true
+	end
+	local maxN = tonumber(cfg().netRateLimitPerSec) or 30
+	local window = tonumber(cfg().netRateLimitWindow) or 1.0
+	local cutoff = tick() - window
+	local i = 1
+	while i <= netRecentSize and netRecentTimestamps[i] < cutoff do
+		i = i + 1
+	end
+	if i > 1 then
+		local j = 1
+		for k = i, netRecentSize do
+			netRecentTimestamps[j] = netRecentTimestamps[k]
+			j = j + 1
+		end
+		for k = j, netRecentSize do
+			netRecentTimestamps[k] = nil
+		end
+		netRecentSize = j - 1
+	end
+	return netRecentSize < maxN
+end
+
+local function netRecord()
+	netRecentSize = netRecentSize + 1
+	netRecentTimestamps[netRecentSize] = tick()
+end
+
+local function arNetDoInvoke(name, ...)
+	if not Network or type(Network.Invoke) ~= "function" then
+		return nil
+	end
+	return Network.Invoke(name, ...)
+end
+
+local function arNetDoFire(name, ...)
+	if not Network or type(Network.Fire) ~= "function" then
+		return
+	end
+	Network.Fire(name, ...)
+end
+
+local function arNetDoUnreliable(name, ...)
+	if not Network or type(Network.UnreliableFire) ~= "function" then
+		return
+	end
+	Network.UnreliableFire(name, ...)
+end
+
+function AR.Net.invoke(name, ...)
+	if not Network or type(Network.Invoke) ~= "function" then
+		return nil, "network_missing"
+	end
+	local prio = netPriorityFor(name)
+	if prio < 10 and not netWithinRate() then
+		traceThrottled("net_drop_invoke_" .. tostring(name), 5, "net", "rate-limit drop invoke", name, "prio=", prio)
+		return nil, "rate_limited"
+	end
+	netRecord()
+	local ok, a, b, c, d = pcall(arNetDoInvoke, name, ...)
+	if not ok then
+		traceThrottled("net_err_invoke_" .. tostring(name), 5, "net", "invoke err", name, a)
+		return nil, a
+	end
+	return a, b, c, d
+end
+
+function AR.Net.fire(name, ...)
+	if not Network or type(Network.Fire) ~= "function" then
+		return
+	end
+	local prio = netPriorityFor(name)
+	if prio < 10 and not netWithinRate() then
+		traceThrottled("net_drop_fire_" .. tostring(name), 5, "net", "rate-limit drop fire", name, "prio=", prio)
+		return
+	end
+	netRecord()
+	local ok, err = pcall(arNetDoFire, name, ...)
+	if not ok then
+		traceThrottled("net_err_fire_" .. tostring(name), 5, "net", "fire err", name, err)
+	end
+end
+
+function AR.Net.unreliable(name, ...)
+	if not Network or type(Network.UnreliableFire) ~= "function" then
+		return
+	end
+	if cfg().netRateLimitEnabled and not netWithinRate() then
+		traceThrottled("net_drop_unreliable_" .. tostring(name), 5, "net", "rate-limit drop unreliable", name)
+		return
+	end
+	netRecord()
+	local ok, err = pcall(arNetDoUnreliable, name, ...)
+	if not ok then
+		traceThrottled("net_err_unreliable_" .. tostring(name), 5, "net", "unreliable err", name, err)
+	end
+end
+
+function AR.Net.fired(name)
+	if not Network or type(Network.Fired) ~= "function" then
+		return nil
+	end
+	local ok, sig = pcall(Network.Fired, name)
+	if ok and sig then
+		return sig
+	end
+	return nil
+end
+
+function AR.Net.stats()
+	return {
+		recent = netRecentSize,
+		rateLimitPerSec = tonumber(cfg().netRateLimitPerSec) or 30,
+		window = tonumber(cfg().netRateLimitWindow) or 1.0,
+		enabled = cfg().netRateLimitEnabled,
+	}
+end
+end
+
+local function safeRequire(mod)
+	if not mod then
+		return nil
+	end
+	local genv = (getgenv and getgenv()) or _G
+	if type(genv.getrequire) == "function" then
+		local ok, res = pcall(genv.getrequire, mod)
+		if ok and res ~= nil then
+			return res
+		end
+	end
+	local getID = genv.getthreadidentity or genv.getidentity or genv.getthreadcontext
+	local setID = genv.setthreadidentity or genv.setidentity or genv.setthreadcontext
+	local oldId = 8
+	local changed = false
+	if type(getID) == "function" and type(setID) == "function" then
+		pcall(function()
+			oldId = getID()
+			setID(2)
+			changed = true
+		end)
+	end
+	local ok, res = pcall(require, mod)
+	if changed then
+		pcall(function()
+			setID(oldId)
+		end)
+	end
+	if ok and res ~= nil then
+		return res
+	end
+	return require(mod)
+end
+
+local function cacheReq(mod)
+	if not mod then
+		return nil
+	end
+	local genv = (getgenv and getgenv()) or _G
+	if type(genv.getrequire) == "function" then
+		local ok, res = pcall(genv.getrequire, mod)
+		if ok and res ~= nil then
+			return res
+		end
+		return nil
+	end
+	return safeRequire(mod)
+end
 
 local function ensureModules()
 	if not ClientFolder then
@@ -621,46 +994,50 @@ local function ensureModules()
 	end
 	local ok, err = pcall(function()
 		local Client = ClientFolder
-		Network = Network or require(Client:WaitForChild("Network"))
-		BreakableFrontend = BreakableFrontend or require(Client:WaitForChild("BreakableFrontend"))
-		Save = Save or require(Client:WaitForChild("Save"))
-		pcall(function() RankCmds = RankCmds or require(Client:WaitForChild("RankCmds")) end)
-		MapCmds = MapCmds or require(Client:WaitForChild("MapCmds"))
-		InstancingCmds = InstancingCmds or require(Client:WaitForChild("InstancingCmds"))
-		GUI = GUI or require(Client:WaitForChild("GUI"))
+		Network = Network or cacheReq(Client:WaitForChild("Network"))
+		BreakableFrontend = BreakableFrontend or cacheReq(Client:WaitForChild("BreakableFrontend"))
+		Save = Save or cacheReq(Client:WaitForChild("Save"))
+		pcall(function() RankCmds = RankCmds or cacheReq(Client:WaitForChild("RankCmds")) end)
+		MapCmds = MapCmds or cacheReq(Client:WaitForChild("MapCmds"))
+		InstancingCmds = InstancingCmds or cacheReq(Client:WaitForChild("InstancingCmds"))
+		GUI = GUI or cacheReq(Client:WaitForChild("GUI"))
 		local Lib = ReplicatedStorage.Library
-		Directory = Directory or require(Lib:WaitForChild("Directory"))
-		pcall(function() RanksUtil = RanksUtil or require(Lib.Util:WaitForChild("RanksUtil")) end)
-		FFlags = FFlags or require(Client:WaitForChild("FFlags"))
-		ZoneCmds = ZoneCmds or require(Client:WaitForChild("ZoneCmds"))
-		TeleportMapCmds = TeleportMapCmds or require(Client:WaitForChild("TeleportMapCmds"))
-		CurrencyCmds = CurrencyCmds or require(Client:WaitForChild("CurrencyCmds"))
-		Balancing = Balancing or require(ReplicatedStorage.Library:WaitForChild("Balancing"))
-		RebirthCmds = RebirthCmds or require(Client:WaitForChild("RebirthCmds"))
-		InstanceZoneCmds = InstanceZoneCmds or require(Client:WaitForChild("InstanceZoneCmds"))
-		GoalCmds = GoalCmds or require(Client:WaitForChild("GoalCmds"))
-		Functions = Functions or require(ReplicatedStorage.Library:WaitForChild("Functions"))
-		Variables = Variables or require(ReplicatedStorage.Library:WaitForChild("Variables"))
-		TabController = TabController or require(Client:WaitForChild("TabController"))
-		InventoryCmds = InventoryCmds or require(Client:WaitForChild("InventoryCmds"))
-		HatchingCmds = HatchingCmds or require(Client:WaitForChild("HatchingCmds"))
-		EggCmds = EggCmds or require(Client:WaitForChild("EggCmds"))
-		HatchingTypes = HatchingTypes or require(ReplicatedStorage.Library.Types:WaitForChild("Hatching"))
-		PotionCmds = PotionCmds or require(Client:WaitForChild("PotionCmds"))
-		FruitCmds = FruitCmds or require(Client:WaitForChild("FruitCmds"))
-		EggsUtil = EggsUtil or require(ReplicatedStorage.Library.Util:WaitForChild("EggsUtil"))
-		EnchantCmds = EnchantCmds or require(Client:WaitForChild("EnchantCmds"))
-		ZonesUtil = ZonesUtil or require(ReplicatedStorage.Library.Util:WaitForChild("ZonesUtil"))
-		PetEquipCmds = PetEquipCmds or require(Client:WaitForChild("PetEquipCmds"))
-		PetCmds = PetCmds or require(Client:WaitForChild("PetCmds"))
-		MachineCmds = MachineCmds or require(Client:WaitForChild("MachineCmds"))
-		UpgradeCmds = UpgradeCmds or require(Client:WaitForChild("UpgradeCmds"))
-		Gamepasses = Gamepasses or require(Client:WaitForChild("Gamepasses"))
-		CustomEggsCmds = CustomEggsCmds or require(Client:WaitForChild("CustomEggsCmds"))
-		DaycareCmds = DaycareCmds or require(Client:WaitForChild("DaycareCmds"))
-		FlexibleFlagCmds = FlexibleFlagCmds or require(Client:WaitForChild("FlexibleFlagCmds"))
-		MasteryCmds = MasteryCmds or require(Client:WaitForChild("MasteryCmds"))
-		ConsumableCmds = ConsumableCmds or require(Client:WaitForChild("ConsumableCmds"))
+		Directory = Directory or cacheReq(Lib:WaitForChild("Directory"))
+		pcall(function() RanksUtil = RanksUtil or cacheReq(Lib.Util:WaitForChild("RanksUtil")) end)
+		FFlags = FFlags or cacheReq(Client:WaitForChild("FFlags"))
+		ZoneCmds = ZoneCmds or cacheReq(Client:WaitForChild("ZoneCmds"))
+		TeleportMapCmds = TeleportMapCmds or cacheReq(Client:WaitForChild("TeleportMapCmds"))
+		CurrencyCmds = CurrencyCmds or cacheReq(Client:WaitForChild("CurrencyCmds"))
+		Balancing = Balancing or cacheReq(ReplicatedStorage.Library:WaitForChild("Balancing"))
+		RebirthCmds = RebirthCmds or cacheReq(Client:WaitForChild("RebirthCmds"))
+		InstanceZoneCmds = InstanceZoneCmds or cacheReq(Client:WaitForChild("InstanceZoneCmds"))
+		GoalCmds = GoalCmds or cacheReq(Client:WaitForChild("GoalCmds"))
+		Variables = Variables or cacheReq(ReplicatedStorage.Library:WaitForChild("Variables"))
+		TabController = TabController or cacheReq(Client:WaitForChild("TabController"))
+		InventoryCmds = InventoryCmds or cacheReq(Client:WaitForChild("InventoryCmds"))
+		HatchingCmds = HatchingCmds or cacheReq(Client:WaitForChild("HatchingCmds"))
+		EggCmds = EggCmds or cacheReq(Client:WaitForChild("EggCmds"))
+		HatchingTypes = HatchingTypes or cacheReq(ReplicatedStorage.Library.Types:WaitForChild("Hatching"))
+		PotionCmds = PotionCmds or cacheReq(Client:WaitForChild("PotionCmds"))
+		FruitCmds = FruitCmds or cacheReq(Client:WaitForChild("FruitCmds"))
+		EggsUtil = EggsUtil or cacheReq(ReplicatedStorage.Library.Util:WaitForChild("EggsUtil"))
+		EnchantCmds = EnchantCmds or cacheReq(Client:WaitForChild("EnchantCmds"))
+		ZonesUtil = ZonesUtil or cacheReq(ReplicatedStorage.Library.Util:WaitForChild("ZonesUtil"))
+		PetEquipCmds = PetEquipCmds or cacheReq(Client:WaitForChild("PetEquipCmds"))
+		PetCmds = PetCmds or cacheReq(Client:WaitForChild("PetCmds"))
+		pcall(function()
+			PetNetworking = PetNetworking or cacheReq(Client:WaitForChild("PetNetworking"))
+		end)
+		MachineCmds = MachineCmds or cacheReq(Client:WaitForChild("MachineCmds"))
+		UpgradeCmds = UpgradeCmds or cacheReq(Client:WaitForChild("UpgradeCmds"))
+		Gamepasses = Gamepasses or cacheReq(Client:WaitForChild("Gamepasses"))
+		CustomEggsCmds = CustomEggsCmds or cacheReq(Client:WaitForChild("CustomEggsCmds"))
+		DaycareCmds = DaycareCmds or cacheReq(Client:WaitForChild("DaycareCmds"))
+		FlexibleFlagCmds = FlexibleFlagCmds or cacheReq(Client:WaitForChild("FlexibleFlagCmds"))
+		MasteryCmds = MasteryCmds or cacheReq(Client:WaitForChild("MasteryCmds"))
+		ConsumableCmds = ConsumableCmds or cacheReq(Client:WaitForChild("ConsumableCmds"))
+		AutoFarmCmds = AutoFarmCmds or cacheReq(Client:WaitForChild("AutoFarmCmds"))
+		Signal = Signal or cacheReq(ReplicatedStorage.Library:WaitForChild("Signal"))
 	end)
 	if not ok then
 		warnErr("ensureModules", err)
@@ -668,11 +1045,14 @@ local function ensureModules()
 	return ok
 end
 
-local lastEnsureModulesHeartbeatTick = 0
+Ticks.lastEnsureModulesHeartbeatTick = 0
 local ensureModulesCachedOk = false
 
---- Полный require-модулей тяжёлый даже с or require; раз в интервал достаточно после первой загрузки.
 local function ensureModulesOnHeartbeat()
+	local waitSec = tonumber(cfg().ensureModulesInitialDelaySec) or 0
+	if waitSec > 0 and (tick() - autoRankLoadTick) < waitSec then
+		return false
+	end
 	local iv = cfg().ensureModulesInterval
 	if type(iv) ~= "number" or iv <= 0 then
 		local ok = ensureModules()
@@ -680,62 +1060,135 @@ local function ensureModulesOnHeartbeat()
 		return ok
 	end
 	local now = tick()
-	if ensureModulesCachedOk and (now - lastEnsureModulesHeartbeatTick) < iv then
+	if ensureModulesCachedOk and (now - Ticks.lastEnsureModulesHeartbeatTick) < iv then
 		return true
 	end
-	lastEnsureModulesHeartbeatTick = now
+	Ticks.lastEnsureModulesHeartbeatTick = now
 	local ok = ensureModules()
 	ensureModulesCachedOk = ok
 	return ok
 end
 
-local lastDamageTick = 0
+Ticks.lastDamageTick = 0
 local currentFocusUid = nil
 local orbAccumulator = {}
 local lastOrbSend = 0
-local lastOrbAccumPruneTick = 0
+Ticks.lastOrbAccumPruneTick = 0
 local orbNetHooked = false
 local orbMagnetPatched = false
 local networkInvokeHookInstalled = false
 local networkInvokeOriginal = nil
-local lastClaimTick = 0
-local lastRankUpGuiTick = 0
-local lastZonePurchaseTick = 0
-local lastTeleportTick = 0
-local lastTravelWorldDirectNetworkTick = 0
-local lastTravelTechRebirthWarnTick = 0
-local lastReturnAreaGuiTick = 0
-local lastQuestPickTick = 0
-local lastQuestHatchTick = 0
-local lastProgressOnlyHatchTick = 0
-local lastPotionConsumeTick = 0
-local lastFruitConsumeTick = 0
-local lastConsumableConsumeTick = 0
-local lastQuestGuiClickTick = 0
-local lastEnchantEquipTick = 0
-local lastEggOpeningPromptTick = 0
-local lastEggOpeningGuiScanTick = 0
-local lastAutoEquipBestTick = 0
-local lastMinigameAssistTick = 0
+local orbMagnetOriginal = nil
+local orbMagnetModule = nil
+local kickGuardKickOrig = nil
+local kickGuardKickProbeDone = false
+local kickGuardNamecallProbeDone = false
+local kickGuardNamecallOrig = nil
+local restoreRuntimeHooks = nil
+Ticks.lastClaimTick = 0
+Ticks.lastRankUpGuiTick = 0
+Ticks.lastZonePurchaseTick = 0
+Ticks.lastTeleportTick = 0
+Ticks.lastTravelWorldDirectNetworkTick = 0
+Ticks.lastTravelTechRebirthWarnTick = 0
+Ticks.lastReturnAreaGuiTick = 0
+Ticks.lastQuestPickTick = 0
+Ticks.lastQuestHatchTick = 0
+Ticks.lastProgressOnlyHatchTick = 0
+Ticks.lastPotionConsumeTick = 0
+Ticks.lastFruitConsumeTick = 0
+Ticks.lastConsumableConsumeTick = 0
+Ticks.lastFarmExplosiveTick = 0
+local farmExplosiveInvokeBusy = false
+Ticks.lastQuestGuiClickTick = 0
+Ticks.lastEnchantEquipTick = 0
+Ticks.lastEnchantLoadoutTick = 0
+Ticks.lastEggOpeningPromptTick = 0
+Ticks.lastEggOpeningGuiScanTick = 0
+Ticks.lastAutoEquipBestTick = 0
+Ticks.lastMinigameAssistTick = 0
 local minigameSessionInstanceId = nil
 local minigameSessionStartTick = 0
 local cachedTrackedObjective = nil
-local lastFarmCenterTick = 0
-local lastEquipSlotTick = 0
-local lastEggSlotTick = 0
-local lastUpgradePurchaseTick = 0
-local lastDaycareTick = 0
-local lastRebirthDismissTick = 0
-local lastQuestFlagTick = 0
---- Пока true — не дергаем телепорт на макс. зону, не тянем в центр брейков и не шлём урон (HeartBeat может продолжаться во время task.wait хэтча).
+local cachedTrackedObjectiveZone = nil
+local questMachineGuiStuckState = { snippet = "", clicks = 0, firstAt = 0 }
+local freeGiftClaimedLocal = {}
+local potionQuestGuiBlobCache = ""
+local potionQuestGuiBlobCacheTick = -1e9
+local rankGoalsGuiBlobCache = ""
+local rankGoalsGuiBlobCacheTick = -1e9
+local rankGuiSynthProtectedInstanceId = nil
+local rankGuiSynthProtectedUntilTick = 0
+
+local function clearRankGuiSynthProtection()
+	rankGuiSynthProtectedInstanceId = nil
+	rankGuiSynthProtectedUntilTick = 0
+end
+
+local function bumpRankGuiSynthProtectionFromTracked(tr)
+	if cfg().questSynthRankProtectInstanceFromAutoLeave == false then
+		clearRankGuiSynthProtection()
+		return
+	end
+	if not tr or tr._rankGuiSynth ~= true or type(tr._synthInstanceId) ~= "string" or tr._synthInstanceId == "" then
+		return
+	end
+	local ttl = tonumber(cfg().questSynthRankProtectTtlSeconds) or 180
+	rankGuiSynthProtectedInstanceId = tr._synthInstanceId
+	rankGuiSynthProtectedUntilTick = tick() + ttl
+end
+
+local function rankGuiSynthProtectionAllowsStay(instanceId)
+	if cfg().questSynthRankProtectInstanceFromAutoLeave == false then
+		return false
+	end
+	if type(instanceId) ~= "string" or instanceId == "" then
+		return false
+	end
+	if rankGuiSynthProtectedInstanceId ~= instanceId then
+		return false
+	end
+	return tick() < rankGuiSynthProtectedUntilTick
+end
+
+local lastEggUnlockAt = {}
+local machinePurchaseRetryAfter = {
+	EggSlots = 0,
+	EquipSlots = 0,
+}
+Ticks.lastFarmCenterTick = 0
+Ticks.lastEquipSlotTick = 0
+Ticks.lastEggSlotTick = 0
+Ticks.lastUpgradePurchaseTick = 0
+Ticks.lastDaycareTick = 0
+Ticks.lastRebirthDismissTick = 0
+Ticks.lastRankUpDismissTick = 0
+Ticks.lastMasteryPerkDismissTick = 0
+Ticks.lastAutoFarmEnableTick = 0
+local autoFarmEnabledZone = nil
+Ticks.lastQuestFlagTick = 0
+Ticks.lastQuestSpawnInventoryBreakTick = 0
+Ticks.lastBuiltInAutoTapperTick = 0
+Ticks.lastFreeGiftsTick = 0
+Ticks.lastLootboxTick = 0
+Ticks.lastConsTick = 0
+Ticks.lastConsFailPruneTick = 0
+Ticks.progressOnlyHatchDisabledAt = 0
+Ticks.hb = {}
 local hatchBusy = false
 local hatchBusyArmedAt = 0
+local hatchBusyToken = 0
 
 local function armHatchBusyEnd(delaySec)
 	hatchBusy = true
 	hatchBusyArmedAt = tick()
+	hatchBusyToken += 1
+	local token = hatchBusyToken
 	local d = delaySec or cfg().hatchBusyHoldSeconds or 2.6
 	task.delay(d, function()
+		if token ~= hatchBusyToken then
+			return
+		end
 		hatchBusy = false
 		hatchBusyArmedAt = 0
 	end)
@@ -770,7 +1223,6 @@ local AutoRankRuntimeState = {
 	diagQuest = {},
 	diagTeleport = {},
 	diagGoalPick = {},
-	--- Кэш фарма + туториал-троттлинг (в чанке отдельными local — упираемся в лимит 200 регистров Luau)
 	farmCandidateCache = { list = nil, at = -1e9, diag = nil },
 	lastTutorialArrowTick = 0,
 }
@@ -793,8 +1245,17 @@ local function autoRankDisconnectAll()
 	orbNetHooked = false
 	hatchBusy = false
 	hatchBusyArmedAt = 0
+	hatchBusyToken += 1
+	cachedTrackedObjective = nil
+	cachedTrackedObjectiveZone = nil
 	ensureModulesCachedOk = false
-	lastEnsureModulesHeartbeatTick = 0
+	Ticks.lastEnsureModulesHeartbeatTick = 0
+	if type(restoreRuntimeHooks) == "function" then
+		pcall(restoreRuntimeHooks)
+	end
+	if AR.Cons and type(AR.Cons.failUntil) == "table" then
+		table.clear(AR.Cons.failUntil)
+	end
 	local fc = AutoRankRuntimeState.farmCandidateCache
 	fc.list = nil
 	fc.diag = nil
@@ -808,14 +1269,39 @@ local function autoRankRegisterConn(conn)
 	return conn
 end
 
+local taggedConnections = {}
+local function autoRankRegisterTaggedConn(tag, conn)
+	if not (tag and conn and conn.Disconnect) then
+		return conn
+	end
+	local prev = taggedConnections[tag]
+	if prev then
+		pcall(function() prev:Disconnect() end)
+	end
+	taggedConnections[tag] = conn
+	table.insert(AutoRankRuntimeState.connections, conn)
+	return conn
+end
+AR.registerConn = autoRankRegisterConn
+AR.registerTaggedConn = autoRankRegisterTaggedConn
+AR.taggedConnections = taggedConnections
+
 do
 	local prev = G.AutoRankRuntime
 	if prev and type(prev.disconnectAll) == "function" then
 		pcall(prev.disconnectAll)
 	end
 	AutoRankRuntimeState.disconnectAll = autoRankDisconnectAll
+	AutoRankRuntimeState.AR = AR
+	AR.runtime = AutoRankRuntimeState
+	AR.connections = AutoRankRuntimeState.connections
 	G.AutoRankRuntime = AutoRankRuntimeState
+	G.AutoRankAR = AR
 	G.AutoRankUnload = function()
+		for k, c in pairs(taggedConnections) do
+			pcall(function() c:Disconnect() end)
+			taggedConnections[k] = nil
+		end
 		autoRankDisconnectAll()
 	end
 end
@@ -839,7 +1325,7 @@ local function tryCloseMachineTabIfConfigured()
 			end
 			for _, id in ipairs(list) do
 				if cur == id then
-					TabController.CloseTab(cfg().autoCloseTabUseForce == true and true or nil)
+					TabController.CloseTab(cfg().autoCloseTabUseForce == true or nil)
 					break
 				end
 			end
@@ -915,7 +1401,6 @@ local function pivotNearEquipSlotsMachine()
 	return pivotCharacterToCFrame(cf)
 end
 
---- Клиент Infinity Egg останавливает автохэтч при > ~40 studs от Center — подтягиваем к ближайшему стенду.
 local function pivotNearestInfinityEggStand()
 	if not cfg().pivotBeforeRemotePurchases or not cfg().hatchTeleportNearEgg then
 		return false
@@ -971,7 +1456,6 @@ local function fflagUpgradesOk()
 	return ok
 end
 
---- Зеркало Egg Slots Machine: generateBundles / GetStatus / стоимость бандла алмазами.
 local EggSlots = {}
 
 function EggSlots.generateBundles(rankEntry)
@@ -1055,7 +1539,6 @@ function EggSlots.bundleStatus(bundleEnd)
 		RanksUtil.GetMaxEggSlots()
 	end)
 	local purchased = save.EggSlotsPurchased or 0
-	-- Как Egg Slots Machine v5_upvr (дистрибутив Studio): одинаковые приоритеты and/or
 	return geBundle <= purchased and "PURCHASED"
 		or (
 			(geBundle == 1 or (purchased == prevEnd and geBundle <= maxPurch)) and "NEXT"
@@ -1151,18 +1634,27 @@ local function pivotNearEggSlotsMachine()
 	return pivotCharacterToCFrame(cf)
 end
 
+local function machinePurchaseFailureCooldown(errMsg)
+	local msg = string.lower(tostring(errMsg or ""))
+	if string.find(msg, "don't own this machine", 1, true) then
+		return tonumber(cfg().machineNotOwnedCooldown) or 30
+	end
+	return tonumber(cfg().machinePurchaseFailureCooldown) or 6
+end
+
 local function tryAutoBuyEggSlots()
 	if not cfg().autoBuyEggSlots or not Network or not CurrencyCmds or not Directory then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	local inInst = safeIsInInstance()
+	if inInst then
 		return
 	end
 	local now = tick()
-	if now - lastEggSlotTick < (cfg().eggSlotPurchaseInterval or 1) then
+	if now < (machinePurchaseRetryAfter.EggSlots or 0) then
+		return
+	end
+	if now - Ticks.lastEggSlotTick < (cfg().eggSlotPurchaseInterval or 1) then
 		return
 	end
 	if not fflagEggSlotsOk() then
@@ -1182,20 +1674,19 @@ local function tryAutoBuyEggSlots()
 		if not afford then
 			break
 		end
-		lastEggSlotTick = now
+		Ticks.lastEggSlotTick = now
 		pivotNearEggSlotsMachine()
 		local invOk = false
 		local errMsg = nil
-		pcall(function()
-			local r, e = Network.Invoke("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd)
-			invOk = r ~= false and r ~= nil
-			errMsg = e
-		end)
+		local r, e = AR.Net.invoke("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd)
+		invOk = r ~= false and r ~= nil
+		errMsg = e
 		log("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd, totalCost, invOk, errMsg)
 		if invOk then
 			tryCloseMachineTabIfConfigured()
 		end
 		if not invOk then
+			machinePurchaseRetryAfter.EggSlots = now + machinePurchaseFailureCooldown(errMsg)
 			break
 		end
 	end
@@ -1205,14 +1696,15 @@ local function tryAutoBuyEquipSlots()
 	if not cfg().autoBuyEquipSlots or not Network or not PetEquipCmds or not CurrencyCmds then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	local inInst = safeIsInInstance()
+	if inInst then
 		return
 	end
 	local now = tick()
-	if now - lastEquipSlotTick < (cfg().equipSlotPurchaseInterval or 1) then
+	if now < (machinePurchaseRetryAfter.EquipSlots or 0) then
+		return
+	end
+	if now - Ticks.lastEquipSlotTick < (cfg().equipSlotPurchaseInterval or 1) then
 		return
 	end
 	if not fflagPetSlotsOk() then
@@ -1256,19 +1748,18 @@ local function tryAutoBuyEquipSlots()
 				break
 			end
 		end
-		lastEquipSlotTick = now
+		Ticks.lastEquipSlotTick = now
 		pivotNearEquipSlotsMachine()
 		local invOk = false
 		local errMsg = nil
-		pcall(function()
-			local r, e = Network.Invoke("EquipSlotsMachine_RequestPurchase", targetSlot)
-			invOk = r ~= false and r ~= nil
-			errMsg = e
-		end)
+		local r, e = AR.Net.invoke("EquipSlotsMachine_RequestPurchase", targetSlot)
+		invOk = r ~= false and r ~= nil
+		errMsg = e
 		log("EquipSlotsMachine_RequestPurchase", targetSlot, invOk, errMsg)
 		if invOk then
 			tryCloseMachineTabIfConfigured()
 		else
+			machinePurchaseRetryAfter.EquipSlots = now + machinePurchaseFailureCooldown(errMsg)
 			break
 		end
 	end
@@ -1278,14 +1769,12 @@ local function tryAutoBuyCheapestUpgrade()
 	if not cfg().autoBuyCheapestUpgrade or not UpgradeCmds or not CurrencyCmds or not Directory then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	local inInst = safeIsInInstance()
+	if inInst then
 		return
 	end
 	local now = tick()
-	if now - lastUpgradePurchaseTick < (cfg().upgradePurchaseInterval or 1.5) then
+	if now - Ticks.lastUpgradePurchaseTick < (cfg().upgradePurchaseInterval or 1.5) then
 		return
 	end
 	if not fflagUpgradesOk() then
@@ -1326,7 +1815,7 @@ local function tryAutoBuyCheapestUpgrade()
 	if not bestU or not bestU.Model then
 		return
 	end
-	lastUpgradePurchaseTick = now
+	Ticks.lastUpgradePurchaseTick = now
 	if cfg().pivotBeforeRemotePurchases then
 		local m = bestU.Model
 		local pivotPart = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
@@ -1359,24 +1848,89 @@ local function canEnrollPetData(data)
 	return true
 end
 
+-- Save.EquippedPets is slot/euid -> row (not petUid -> true). Old check EquippedPets[uid] was always nil → daycare ate equipped pets.
+local function saveTableMentionsPetUid(tbl, uid)
+	if type(tbl) ~= "table" or type(uid) ~= "string" or uid == "" then
+		return false
+	end
+	for k, v in pairs(tbl) do
+		if v == uid or k == uid then
+			return true
+		end
+		if type(v) == "table" and (v.uid == uid or v.UID == uid) then
+			return true
+		end
+	end
+	return false
+end
+
+local function petUidIsEquippedFromSave(s, uid)
+	if type(s) ~= "table" or type(uid) ~= "string" or uid == "" then
+		return false
+	end
+	if s.EquippedPets and s.EquippedPets[uid] == true then
+		return true
+	end
+	if saveTableMentionsPetUid(s.EquippedPets or {}, uid) then
+		return true
+	end
+	if saveTableMentionsPetUid(s.EquippedPetsTitanic or {}, uid) then
+		return true
+	end
+	if saveTableMentionsPetUid(s.EquippedPetsGargantuan or {}, uid) then
+		return true
+	end
+	return false
+end
+
+local function petUidIsEquippedFromNetworking(uid)
+	if type(PetNetworking) ~= "table" or type(PetNetworking.EquippedPets) ~= "function" then
+		return false
+	end
+	if type(uid) ~= "string" or uid == "" then
+		return false
+	end
+	local ok, t = pcall(function()
+		return PetNetworking.EquippedPets()
+	end)
+	if not ok or type(t) ~= "table" then
+		return false
+	end
+	for _, row in pairs(t) do
+		if type(row) == "table" and row.uid == uid then
+			return true
+		end
+	end
+	return false
+end
+
+local function petUidIsCurrentlyEquipped(s, uid)
+	return petUidIsEquippedFromSave(s, uid) or petUidIsEquippedFromNetworking(uid)
+end
+
 local function tryAutoDaycare()
 	if not cfg().autoDaycare or not DaycareCmds then return end
-	local okIn, inInst = pcall(function() return InstancingCmds.IsInInstance() end)
-	if okIn and inInst then return end
+	if safeIsInInstance() then return end
 	
 	local now = tick()
-	if now - lastDaycareTick < (cfg().autoDaycareInterval or 5) then return end
+	if now - Ticks.lastDaycareTick < (cfg().autoDaycareInterval or 5) then return end
 	
 	local active = nil
 	pcall(function() active = DaycareCmds.GetActive() end)
 	if type(active) == "table" then
+		local claimed = 0
+		local maxClaims = tonumber(cfg().autoDaycareMaxClaimsPerTick) or 1
 		for uid, _ in pairs(active) do
 			local remaining = math.huge
 			pcall(function() remaining = DaycareCmds.ComputeRemainingTime(uid) end)
 			if remaining <= 0 then
-				lastDaycareTick = now
+				Ticks.lastDaycareTick = now
 				pcall(function() DaycareCmds.Claim(uid) end)
 				log("Daycare Claimed", uid)
+				claimed += 1
+				if claimed >= maxClaims then
+					return
+				end
 			end
 		end
 	end
@@ -1396,10 +1950,7 @@ local function tryAutoDaycare()
 			
 			for uid, data in pairs(s.Inventory.Pet) do
 				if not data._lk then
-					local isEquipped = false
-					if s.EquippedPets and s.EquippedPets[uid] then
-						isEquipped = true
-					end
+					local isEquipped = petUidIsCurrentlyEquipped(s, uid)
 					if not isEquipped then
 						if canEnrollPetData(data) then
 							toEnroll[uid] = 1
@@ -1410,7 +1961,7 @@ local function tryAutoDaycare()
 				end
 			end
 			if count > 0 then
-				lastDaycareTick = now
+				Ticks.lastDaycareTick = now
 				local ok = false
 				pcall(function() 
 					local res = DaycareCmds.Enroll(toEnroll) 
@@ -1449,9 +2000,7 @@ local function tryCollectOrbs()
 		return
 	end
 	lastOrbSend = now
-	pcall(function()
-		Network.Fire("Orbs: Collect", ids)
-	end)
+	AR.Net.fire("Orbs: Collect", ids)
 	for _, id in ipairs(ids) do
 		orbAccumulator[id] = nil
 	end
@@ -1473,8 +2022,8 @@ local function accumulateOrbBatch(batch)
 	local cap = cfg().orbAccumulatorMaxKeys
 	if type(cap) == "number" and cap > 0 then
 		local now = tick()
-		if now - lastOrbAccumPruneTick >= 1.25 then
-			lastOrbAccumPruneTick = now
+		if now - Ticks.lastOrbAccumPruneTick >= 1.25 then
+			Ticks.lastOrbAccumPruneTick = now
 			local n = 0
 			for _ in pairs(orbAccumulator) do
 				n += 1
@@ -1493,8 +2042,8 @@ local function patchOrbMagnet()
 		return
 	end
 	local ok, orbMod = pcall(function()
-		require(ClientFolder:WaitForChild("OrbCmds"))
-		return require(ClientFolder:WaitForChild("OrbCmds"):WaitForChild("Orb"))
+		cacheReq(ClientFolder:WaitForChild("OrbCmds"))
+		return cacheReq(ClientFolder:WaitForChild("OrbCmds"):WaitForChild("Orb"))
 	end)
 	if not ok or type(orbMod) ~= "table" then
 		return
@@ -1506,8 +2055,13 @@ local function patchOrbMagnet()
 			minD = minD * om
 		end
 	end
+	orbMagnetModule = orbMod
+	orbMagnetOriginal = orbMagnetOriginal or {}
 	for _, key in ipairs({ "CollectDistance", "DefaultPickupDistance", "CombineDistance" }) do
 		local cur = rawget(orbMod, key)
+		if orbMagnetOriginal[key] == nil then
+			orbMagnetOriginal[key] = cur == nil and false or cur
+		end
 		if type(cur) == "number" then
 			rawset(orbMod, key, math.max(cur, minD))
 		else
@@ -1542,13 +2096,51 @@ local function tryInstallNetworkInvokeDebugHook()
 	end
 end
 
---- Блок только клиентских путей (Kick / __namecall). Сервер закрыл соединение — скриптом не восстановить.
-local kickGuardKickOrig = nil
-local kickGuardKickProbeDone = false
-local kickGuardNamecallProbeDone = false
+local TeleportService = game:GetService("TeleportService")
+local kickGuardTeleportLogAt = {}
+
+local function antiKickAnyEnabled()
+	return cfg().kickGuardTryBlockClientKick == true
+		or cfg().kickGuardBlockTeleportToLobby == true
+end
+
+local function antiKickIsBlockedPlaceId(placeId)
+	if type(placeId) ~= "number" then
+		return false
+	end
+	local list = cfg().kickGuardBlockTeleportToPlaceIds
+	if type(list) ~= "table" then
+		return false
+	end
+	for _, v in ipairs(list) do
+		if tonumber(v) == placeId then
+			return true
+		end
+	end
+	return false
+end
+
+local function antiKickLogTeleportDestination(method, placeId, jobId)
+	if type(placeId) ~= "number" then
+		return
+	end
+	local key = tostring(method) .. ":" .. tostring(placeId)
+	local now = tick()
+	if now - (kickGuardTeleportLogAt[key] or 0) < 60 then
+		return
+	end
+	kickGuardTeleportLogAt[key] = now
+	trace(
+		"kick_guard",
+		"TeleportService:" .. method .. "(",
+		tostring(placeId),
+		") seen — добавь в kickGuardBlockTeleportToPlaceIds чтобы блокировать",
+		jobId and ("jobId=" .. tostring(jobId)) or ""
+	)
+end
 
 local function tryInstallKickGuard()
-	if cfg().kickGuardTryBlockClientKick ~= true then
+	if not antiKickAnyEnabled() then
 		return
 	end
 	local lp = Players.LocalPlayer
@@ -1556,7 +2148,7 @@ local function tryInstallKickGuard()
 		return
 	end
 	local hf = execResolve("hookfunction", "replaceclosure")
-	if hf and not kickGuardKickProbeDone then
+	if hf and not kickGuardKickProbeDone and cfg().kickGuardTryBlockClientKick == true then
 		kickGuardKickProbeDone = true
 		local fk = lp.Kick
 		if type(fk) == "function" then
@@ -1611,15 +2203,36 @@ local function tryInstallKickGuard()
 		sor(mt, false)
 		local innerOk, innerErr = pcall(function()
 			local old = mt.__namecall
+			kickGuardNamecallOrig = old
 			local function hooked(self, ...)
-				if cfg().kickGuardTryBlockClientKick ~= true then
+				if not antiKickAnyEnabled() then
 					return old(self, ...)
 				end
-				if gsm() == "Kick" and self == lp then
+				local method = gsm()
+				if cfg().kickGuardTryBlockClientKick == true and method == "Kick" and self == lp then
 					if cfg().kickGuardKickLog then
 						traceThrottled("kick_guard_nc", 2, "kick_guard", "blocked namecall Kick")
 					end
 					return nil
+				end
+				if cfg().kickGuardBlockTeleportToLobby == true
+					and self == TeleportService
+					and (method == "Teleport"
+						or method == "TeleportAsync"
+						or method == "TeleportToPlaceInstance"
+						or method == "TeleportToPrivateServer"
+						or method == "TeleportPartyAsync")
+				then
+					local args = { ... }
+					local placeId = args[1]
+					antiKickLogTeleportDestination(method, placeId, args[2])
+					if antiKickIsBlockedPlaceId(placeId) then
+						if cfg().kickGuardKickLog then
+							traceThrottled("kick_guard_tp_" .. tostring(placeId), 2, "kick_guard",
+								"blocked TeleportService:" .. method .. "(" .. tostring(placeId) .. ")")
+						end
+						return nil
+					end
 				end
 				return old(self, ...)
 			end
@@ -1634,8 +2247,53 @@ local function tryInstallKickGuard()
 		trace("kick_guard", "__namecall hook failed", errNc)
 	end
 end
+AR.AntiKick.tryInstall = tryInstallKickGuard
+AR.AntiKick.isBlockedPlaceId = antiKickIsBlockedPlaceId
 
---- При переходе в другой Experience (TeleportService на другой PlaceId) память клиента новая — инжект не переносится. UNC queue_on_teleport запускает тот же .lua заново по URL/readfile.
+restoreRuntimeHooks = function()
+	local hf = execResolve("hookfunction", "replaceclosure")
+	if hf and Network and networkInvokeHookInstalled and type(networkInvokeOriginal) == "function" and type(Network.Invoke) == "function" then
+		pcall(hf, Network.Invoke, networkInvokeOriginal)
+	end
+	networkInvokeHookInstalled = false
+	networkInvokeOriginal = nil
+
+	local lp = Players.LocalPlayer
+	if hf and lp and kickGuardKickProbeDone and type(kickGuardKickOrig) == "function" and type(lp.Kick) == "function" then
+		pcall(hf, lp.Kick, kickGuardKickOrig)
+	end
+	kickGuardKickOrig = nil
+	kickGuardKickProbeDone = false
+
+	if kickGuardNamecallProbeDone and type(kickGuardNamecallOrig) == "function" then
+		local grm = execResolve("getrawmetatable")
+		local sor = execResolve("setreadonly")
+		if grm and sor then
+			pcall(function()
+				local mt = grm(game)
+				if type(mt) == "table" then
+					sor(mt, false)
+					mt.__namecall = kickGuardNamecallOrig
+					sor(mt, true)
+				end
+			end)
+		end
+	end
+	kickGuardNamecallOrig = nil
+	kickGuardNamecallProbeDone = false
+
+	if orbMagnetModule and orbMagnetOriginal then
+		for key, value in pairs(orbMagnetOriginal) do
+			pcall(function()
+				rawset(orbMagnetModule, key, value == false and nil or value)
+			end)
+		end
+	end
+	orbMagnetPatched = false
+	orbMagnetModule = nil
+	orbMagnetOriginal = nil
+end
+
 local crossPlaceQueueRegistered = false
 
 local function tryRegisterCrossPlaceScriptReload()
@@ -1690,6 +2348,14 @@ local function tryFarmFireClickDetectorFallback(entry)
 	end
 end
 
+local function orbsCreateHandler(batch)
+	accumulateOrbBatch(batch)
+end
+
+local function orbsClearHandler()
+	table.clear(orbAccumulator)
+end
+
 local function hookOrbNetwork()
 	if orbNetHooked or not Network or not Network.Fired then
 		return
@@ -1699,30 +2365,145 @@ local function hookOrbNetwork()
 		return
 	end
 	orbNetHooked = true
-	autoRankRegisterConn(connCreate:Connect(function(batch)
-		accumulateOrbBatch(batch)
-	end))
+	autoRankRegisterTaggedConn("orbs_create", connCreate:Connect(orbsCreateHandler))
 	local connClear = Network.Fired("Orbs: Clear")
 	if connClear and connClear.Connect then
-		autoRankRegisterConn(connClear:Connect(function()
-			for k in pairs(orbAccumulator) do
-				orbAccumulator[k] = nil
-			end
-		end))
+		autoRankRegisterTaggedConn("orbs_clear", connClear:Connect(orbsClearHandler))
 	end
 end
 
 local function dealDamage(uid)
 	if not Network then
-		return
+		return false
 	end
 	local now = tick()
-	if now - lastDamageTick < (cfg().delayDamage or 0.125) then
+	if now - Ticks.lastDamageTick < (cfg().delayDamage or 0.125) then
+		return false
+	end
+	Ticks.lastDamageTick = now
+	AR.Net.unreliable("Breakables_PlayerDealDamage", uid)
+	return true
+end
+
+local placeFileModuleCache = nil
+local function getPlaceFileModule()
+	if placeFileModuleCache ~= nil then
+		return placeFileModuleCache
+	end
+	local pf = ReplicatedStorage.Library.Modules:FindFirstChild("PlaceFile")
+	local m = pf and cacheReq(pf) or nil
+	if type(m) == "table" then
+		placeFileModuleCache = m
+		return m
+	end
+	return nil
+end
+
+local function placeFileAllowsFarmExplosive(pf)
+	if cfg().farmExplosiveAssistRequireWorld2 == false then
+		return true
+	end
+	if not pf or type(pf) ~= "table" then
+		return false
+	end
+	if pf.IsWorld2 == true or pf.IsWorld3 == true or pf.IsWorld4 == true then
+		return true
+	end
+	local wn = pf.WorldNumber or pf.worldNumber or pf.World or pf.world
+	if type(wn) == "number" and wn >= 2 then
+		return true
+	end
+	return false
+end
+
+local function farmExplosiveMiscCountsForIds(idList)
+	local s = Save and Save.Get and Save.Get()
+	if not s or not s.Inventory or not s.Inventory.Misc then
+		return nil
+	end
+	local amounts = {}
+	for _, id in ipairs(idList) do
+		amounts[id] = 0
+	end
+	for _, data in pairs(s.Inventory.Misc) do
+		if type(data) == "table" and type(data.id) == "string" and amounts[data.id] ~= nil then
+			local n = tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty)
+			if not n or n < 1 then
+				n = 1
+			end
+			amounts[data.id] += n
+		end
+	end
+	return amounts
+end
+
+local function tryFarmExplosiveAssist(top)
+	if cfg().farmExplosiveBreakableAssist ~= true or not top or not top.entry then
 		return
 	end
-	lastDamageTick = now
-	pcall(function()
-		Network.UnreliableFire("Breakables_PlayerDealDamage", uid)
+	if not top.entry.disableDamage and cfg().farmExplosiveAssistWhenDealingDamage ~= true then
+		return
+	end
+	if not Network or type(Network.Invoke) ~= "function" then
+		return
+	end
+	if not safeCurrentZone() then
+		return
+	end
+	if safeIsInInstance() then
+		return
+	end
+	if not safeInDottedBox() then
+		if cfg().farmExplosiveAssistPullToFarmBox and AutoRankRuntimeState.tryPivotToBreakableFarmCenter then
+			pcall(function()
+				AutoRankRuntimeState.tryPivotToBreakableFarmCenter(false)
+			end)
+		end
+		return
+	end
+	if cfg().farmExplosiveAssistRequireWorld2 ~= false then
+		local pf = getPlaceFileModule()
+		if not placeFileAllowsFarmExplosive(pf) then
+			return
+		end
+	end
+	local now = tick()
+	if now - Ticks.lastFarmExplosiveTick < (cfg().farmExplosiveAssistInterval or 2.8) then
+		return
+	end
+	if farmExplosiveInvokeBusy then
+		return
+	end
+	local order = cfg().farmExplosiveAssistPreferOrder
+	if type(order) ~= "table" or #order == 0 then
+		order = { "TNT Crate", "TNT" }
+	end
+	local amounts = farmExplosiveMiscCountsForIds(order)
+	if not amounts then
+		return
+	end
+	local invokeName = nil
+	local chosenId = nil
+	for _, id in ipairs(order) do
+		if (amounts[id] or 0) >= 1 then
+			chosenId = id
+			if id == "TNT Crate" then
+				invokeName = "TNT_Crate_Consume"
+			elseif id == "TNT" then
+				invokeName = "TNT_Consume"
+			end
+			break
+		end
+	end
+	if not invokeName then
+		return
+	end
+	farmExplosiveInvokeBusy = true
+	Ticks.lastFarmExplosiveTick = now
+	local ok, errMsg = AR.Net.invoke(invokeName)
+	log("farm explosive", invokeName, chosenId, ok, errMsg)
+	task.delay(0.55, function()
+		farmExplosiveInvokeBusy = false
 	end)
 end
 
@@ -1747,7 +2528,6 @@ local function characterPrimaryPosition()
 	return pp and pp.Position or nil
 end
 
---- Ключи наград текущего ранга: накопительная звезда ≤ RankStars и ещё не RedeemedRankRewards (как updateNotifications в GUIs.Ranks).
 local function getClaimableRewardKeys()
 	local save = Save and Save.Get and Save.Get()
 	if not save or not Directory or not RanksUtil then
@@ -1781,7 +2561,10 @@ local function getClaimableRewardKeys()
 	return keys
 end
 
-local function zoneUnlockFlagOk()
+-- Chunk-local namespaces (Luau ≤200 locals per prototype): fewer top-level locals than many `local function`.
+local ARZone = {}
+
+function ARZone.zoneUnlockFlagOk()
 	if not FFlags then
 		return true
 	end
@@ -1791,7 +2574,7 @@ local function zoneUnlockFlagOk()
 	return ok and allowed or false
 end
 
-local function teleportFlagOk()
+function ARZone.teleportFlagOk()
 	if not FFlags then
 		return true
 	end
@@ -1801,7 +2584,7 @@ local function teleportFlagOk()
 	return ok and allowed or false
 end
 
-local function isEligibleToPurchaseZoneNumber(zoneNumber)
+function ARZone.isEligibleToPurchaseZoneNumber(zoneNumber)
 	if not zoneNumber or not FFlags or not RebirthCmds then
 		return true
 	end
@@ -1817,18 +2600,15 @@ local function isEligibleToPurchaseZoneNumber(zoneNumber)
 	return ok and allowed ~= false
 end
 
-local function tryAutoBuyInstanceZone()
+function ARZone.tryAutoBuyInstanceZone()
 	if not cfg().autoBuyZones or not Network then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if not okIn or not inInst then
+	if not safeIsInInstance() then
 		return
 	end
 	local now = tick()
-	if now - lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
+	if now - Ticks.lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
 		return
 	end
 	local inst = InstancingCmds.Get and InstancingCmds.Get()
@@ -1856,11 +2636,9 @@ local function tryAutoBuyInstanceZone()
 					can = CurrencyCmds.CanAfford(zdata.CurrencyId, zdata.CurrencyCost)
 				end)
 				if can then
-					lastZonePurchaseTick = now
-					local okR, success = pcall(function()
-						return Network.Invoke("InstanceZones_RequestPurchase", inst.instanceID, zn)
-					end)
-					log("InstanceZones_RequestPurchase", inst.instanceID, zn, okR, success)
+					Ticks.lastZonePurchaseTick = now
+					local success = AR.Net.invoke("InstanceZones_RequestPurchase", inst.instanceID, zn)
+					log("InstanceZones_RequestPurchase", inst.instanceID, zn, success)
 				end
 			end
 			break
@@ -1868,66 +2646,93 @@ local function tryAutoBuyInstanceZone()
 	end
 end
 
-local function tryAutoBuyMainZone()
-	if not cfg().autoBuyZones or not Network or not zoneUnlockFlagOk() then
-		return
+function ARZone.safeDirectoryZonesGet(zoneId)
+	local row = nil
+	if not zoneId or type(zoneId) ~= "string" then
+		return nil
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
+	pcall(function()
+		if Directory and type(Directory.Zones) == "table" then
+			row = Directory.Zones[zoneId]
+		end
 	end)
-	if okIn and inInst then
-		return
-	end
+	return row
+end
+
+function ARZone.getNextMainZonePurchaseInfo(opts)
+	opts = type(opts) == "table" and opts or {}
 	if not ZoneCmds or not Directory or not Balancing or not CurrencyCmds then
-		return
-	end
-	local now = tick()
-	if now - lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
-		return
+		return nil
 	end
 	local nextId, nextTbl = ZoneCmds.GetNextZone()
 	if not nextId then
-		return
+		return nil
 	end
-	nextTbl = nextTbl or (Directory.Zones and Directory.Zones[nextId])
+	nextTbl = nextTbl or ARZone.safeDirectoryZonesGet(nextId)
 	if not nextTbl then
-		return
+		return nil
 	end
 	if ZoneCmds.Owns(nextId) then
-		return
+		return nil
 	end
-	if not cfg().ignoreZoneGateQuests then
+	if not opts.ignoreQuestCompletion and not cfg().ignoreZoneGateQuests then
 		local questsOk = false
 		pcall(function()
 			questsOk = ZoneCmds.HasCompletedNextZoneQuests()
 		end)
 		if not questsOk then
-			return
+			return nil
 		end
 	end
 	local zn = nextTbl.ZoneNumber
-	if zn and not isEligibleToPurchaseZoneNumber(zn) then
-		return
+	if zn and not ARZone.isEligibleToPurchaseZoneNumber(zn) then
+		return nil
 	end
-	local zoneDir = (Directory.Zones and Directory.Zones[nextId]) or nextTbl
+	local zoneDir = ARZone.safeDirectoryZonesGet(nextId) or nextTbl
 	local price = Balancing.CalcGatePrice(zoneDir)
 	local currency = zoneDir and zoneDir.Currency
-	if not price or not currency then
-		return
+	if type(price) ~= "number" or type(currency) ~= "string" then
+		return nil
 	end
 	local bal = CurrencyCmds.Get(currency) or 0
+	return {
+		id = nextId,
+		dir = zoneDir,
+		tbl = nextTbl,
+		price = price,
+		currency = currency,
+		balance = bal,
+		purchaseArg = nextTbl.ZoneName or nextId,
+	}
+end
+
+function ARZone.tryAutoBuyMainZone()
+	if not cfg().autoBuyZones or not Network or not ARZone.zoneUnlockFlagOk() then
+		return
+	end
+	if safeIsInInstance() then
+		return
+	end
+	local now = tick()
+	if now - Ticks.lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
+		return
+	end
+	local info = ARZone.getNextMainZonePurchaseInfo()
+	if not info then
+		return
+	end
+	local bal = info.balance or 0
+	local price = info.price
 	if bal < price then
 		return
 	end
-	lastZonePurchaseTick = now
-	local purchaseArg = nextTbl.ZoneName or nextId
-	local okR, success, errMsg = pcall(function()
-		return Network.Invoke("Zones_RequestPurchase", purchaseArg)
-	end)
-	log("Zones_RequestPurchase", purchaseArg, okR, success, errMsg)
+	Ticks.lastZonePurchaseTick = now
+	local purchaseArg = info.purchaseArg
+	local success, errMsg = AR.Net.invoke("Zones_RequestPurchase", purchaseArg)
+	log("Zones_RequestPurchase", purchaseArg, success, errMsg)
 end
 
-local function questObjectiveEnvironmentBlockedDetail()
+function ARZone.questObjectiveEnvironmentBlockedDetail()
 	if not Variables or not GUI or not InstancingCmds or not FFlags then
 		return false, "variables_gui_fflags_missing"
 	end
@@ -1951,7 +2756,7 @@ local function questObjectiveEnvironmentBlockedDetail()
 		if cfg().questBlockOnGuiTransition and GUI.Transition and GUI.Transition().Enabled then
 			table.insert(reasons, "GUITransition")
 		end
-		if InstancingCmds.IsInInstance and InstancingCmds.IsInInstance("BasketballEvent") then
+		if safeIsInInstance("BasketballEvent") then
 			table.insert(reasons, "BasketballEvent")
 		end
 		if FFlags.GetBoolean and FFlags.Keys and FFlags.Keys.MapVFX and FFlags.GetBoolean(FFlags.Keys.MapVFX) then
@@ -1966,12 +2771,14 @@ local function questObjectiveEnvironmentBlockedDetail()
 	return blocked, (why ~= "" and why) or nil
 end
 
-local function questObjectiveEnvironmentBlocked()
-	local b, _ = questObjectiveEnvironmentBlockedDetail()
+function ARZone.questObjectiveEnvironmentBlocked()
+	local b, _ = ARZone.questObjectiveEnvironmentBlockedDetail()
 	return b
 end
 
-local function descendantGuiButton(obj)
+local ARUI = {}
+
+function ARUI.descendantGuiButton(obj)
 	local at = obj
 	for _ = 1, 12 do
 		if not at then
@@ -1985,8 +2792,7 @@ local function descendantGuiButton(obj)
 	return nil
 end
 
---- TextLabel/TextButton «Click to open!»: предок-GuiButton, соседняя кнопка или подъём по родителям.
-local function resolveOverlayGuiButton(d)
+function ARUI.resolveOverlayGuiButton(d)
 	if not d then
 		return nil
 	end
@@ -2007,11 +2813,10 @@ local function resolveOverlayGuiButton(d)
 			end
 		end
 	end
-	return descendantGuiButton(d)
+	return ARUI.descendantGuiButton(d)
 end
 
---- Ребитх: «Click for more» — только getconnections / firesignal (без мыши экзекьютора).
-local function tryDismissRebirthUi()
+function ARUI.tryDismissRebirthUi()
 	if not cfg().autoDismissRebirthUi then
 		return
 	end
@@ -2023,10 +2828,10 @@ local function tryDismissRebirthUi()
 		return
 	end
 	local now = tick()
-	if now - lastRebirthDismissTick < (cfg().rebirthDismissInterval or 0.28) then
+	if now - Ticks.lastRebirthDismissTick < (cfg().rebirthDismissInterval or 0.28) then
 		return
 	end
-	lastRebirthDismissTick = now
+	Ticks.lastRebirthDismissTick = now
 
 	local pg = LocalPlayer:FindFirstChild("PlayerGui")
 	if pg then
@@ -2034,7 +2839,7 @@ local function tryDismissRebirthUi()
 			if d:IsA("TextLabel") or d:IsA("TextButton") then
 				local t = string.lower(tostring(d.Text or ""))
 				if string.find(t, "click for more", 1, true) or string.find(t, "click for more <", 1, true) then
-					local btn = resolveOverlayGuiButton(d)
+					local btn = ARUI.resolveOverlayGuiButton(d)
 					if btn then
 						if clickGuiButtonRobust(btn) then
 							log("rebirth GUI click", btn:GetFullName())
@@ -2047,9 +2852,105 @@ local function tryDismissRebirthUi()
 	end
 end
 
---- Оверлей открытия яйца (Egg Opening Frontend): промпт текстом + Variables.OpeningEgg; игра продолжается при LocalPlayer.Mouse.Button1Down / геймпад A/X (TapToOpen — Frame+TextLabel, не GuiButton).
---- opts.ignoreThrottles — для короткого бёрста после Eggs_RequestPurchase (см. eggOpeningPostInvokeBurst*).
-local function tryClickEggOpeningPrompt(opts)
+function ARUI.advanceSlideUiByUpvalue()
+	local UIS = game:GetService("UserInputService")
+	local conns = nil
+	conns = Exec.getconnections(UIS.InputBegan)
+	if type(conns) ~= "table" then
+		return false
+	end
+	for _, conn in ipairs(conns) do
+		local fn = conn.Function
+		if type(fn) ~= "function" then
+			continue
+		end
+		local ok, ups = pcall(debug.getupvalues, fn)
+		if not ok or type(ups) ~= "table" then
+			continue
+		end
+		local kbTable = type(ups[1]) == "table" and ups[1]
+		if not kbTable or not kbTable.NextSlideKeybinds then
+			continue
+		end
+		local isInProcess = ups[2] == true
+		if not isInProcess then
+			continue
+		end
+		local clickable = ups[3] == true
+		if not clickable then
+			continue
+		end
+		local advanceFlag = ups[6]
+		if advanceFlag == true then
+			continue
+		end
+		local setOk = pcall(debug.setupvalue, fn, 6, true)
+		if setOk then
+			return true
+		end
+	end
+	return false
+end
+
+function ARUI.tryDismissRankUpUi()
+	if not cfg().autoDismissRankUpUi then
+		return
+	end
+	local isRanking = false
+	pcall(function()
+		isRanking = Variables and Variables.IsRankingUp == true
+	end)
+	if not isRanking then
+		return
+	end
+	local now = tick()
+	if now - Ticks.lastRankUpDismissTick < (cfg().rankUpDismissInterval or 0.32) then
+		return
+	end
+	Ticks.lastRankUpDismissTick = now
+	local fired = ARUI.advanceSlideUiByUpvalue()
+	if fired then
+		log("rank up dismiss via upvalue v5=true")
+		return
+	end
+	traceThrottled("rank_up_dismiss_no_upvalue", 3, "ui", "rank up dismiss skipped: slide upvalue not found")
+end
+
+function ARUI.tryDismissMasteryPerkUi()
+	if not cfg().autoDismissMasteryPerkUi then
+		return
+	end
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	if not pg then
+		return
+	end
+	local masteryGui = nil
+	for _, v in ipairs(pg:GetChildren()) do
+		if v.Name == "MasteryPerk" and v:IsA("ScreenGui") and v.Enabled then
+			masteryGui = v
+			break
+		end
+	end
+	if not masteryGui then
+		return
+	end
+	local now = tick()
+	if now - Ticks.lastMasteryPerkDismissTick < (cfg().masteryPerkDismissInterval or 0.32) then
+		return
+	end
+	Ticks.lastMasteryPerkDismissTick = now
+	local fired = ARUI.advanceSlideUiByUpvalue()
+	if fired then
+		log("mastery perk dismiss via upvalue v5=true")
+		return
+	end
+	pcall(function()
+		masteryGui.Enabled = false
+		log("mastery perk dismiss forced Enabled=false")
+	end)
+end
+
+function ARUI.tryClickEggOpeningPrompt(opts)
 	opts = type(opts) == "table" and opts or {}
 	if cfg().hideEggHatching and cfg().skipEggGuiClickWhenHiddenHatch ~= false then
 		return
@@ -2060,16 +2961,22 @@ local function tryClickEggOpeningPrompt(opts)
 	local now = tick()
 	if not opts.ignoreThrottles then
 		local scanIv = cfg().eggOpeningGuiScanInterval
-		if type(scanIv) == "number" and scanIv > 0 and (now - lastEggOpeningGuiScanTick) < scanIv then
+		if type(scanIv) == "number" and scanIv > 0 and (now - Ticks.lastEggOpeningGuiScanTick) < scanIv then
 			return
 		end
-		lastEggOpeningGuiScanTick = now
+		Ticks.lastEggOpeningGuiScanTick = now
 	end
 
 	local openingEgg = false
 	pcall(function()
-		openingEgg = Variables and type(Variables.OpeningEgg) == "number" and Variables.OpeningEgg > 0
+		openingEgg = Variables and (
+			Variables.OpeningEgg == true
+			or (type(Variables.OpeningEgg) == "number" and Variables.OpeningEgg > 0)
+		)
 	end)
+	if cfg().eggOpeningOnlyWhenOpening ~= false and not openingEgg and not opts.ignoreThrottles then
+		return
+	end
 
 	local matchLabel = nil
 	if openingEgg then
@@ -2105,11 +3012,11 @@ local function tryClickEggOpeningPrompt(opts)
 		end
 	end
 	if not opts.ignoreThrottles then
-		if now - lastEggOpeningPromptTick < clickIv then
+		if now - Ticks.lastEggOpeningPromptTick < clickIv then
 			return
 		end
 	end
-	lastEggOpeningPromptTick = now
+	Ticks.lastEggOpeningPromptTick = now
 
 	if tryFireEggOpenPrimaryInput() then
 		log("egg open primary (Mouse.Button1Down)")
@@ -2117,34 +3024,40 @@ local function tryClickEggOpeningPrompt(opts)
 	end
 
 	if type(matchLabel) == "userdata" and matchLabel.Parent then
-		local btn = resolveOverlayGuiButton(matchLabel)
+		local btn = ARUI.resolveOverlayGuiButton(matchLabel)
 		if btn and clickGuiButtonRobust(btn) then
 			log("egg Click-to-open GUI", btn:GetFullName())
 		end
 	end
 end
 
---- Верхний HUD «Return to Area» — когда игрок на спавне/старой зоне при уже открытых высших зонах.
-local function tryClickReturnToMaxAreaButton()
+function ARUI.tryClickReturnToMaxAreaButton()
 	if not cfg().autoClickReturnToAreaButton or hatchBusy then
 		return
+	end
+	if cfg().questSynthRankSuppressReturnToArea ~= false then
+		local tq = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
+		if tq and tq._rankGuiSynth == true then
+			return
+		end
+		local gen = tq and tq._generatorName
+		if type(gen) == "string" and string.sub(gen, 1, 14) == "RankGuiSynth_" then
+			return
+		end
 	end
 	if not ZoneCmds or not MapCmds then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	if safeIsInInstance() then
 		return
 	end
 	local maxId = select(1, ZoneCmds.GetMaxOwnedZone())
-	local cur = MapCmds.GetCurrentZone()
+	local cur = safeCurrentZone()
 	if not maxId or type(maxId) ~= "string" or not cur or cur == maxId then
 		return
 	end
 	local now = tick()
-	if now - lastReturnAreaGuiTick < (cfg().returnToAreaClickInterval or 2) then
+	if now - Ticks.lastReturnAreaGuiTick < (cfg().returnToAreaClickInterval or 2) then
 		return
 	end
 	local pg = LocalPlayer:FindFirstChild("PlayerGui")
@@ -2155,14 +3068,14 @@ local function tryClickReturnToMaxAreaButton()
 		if d:IsA("TextLabel") or d:IsA("TextButton") then
 			local t = string.lower(tostring(d.Text or ""))
 			if string.find(t, "return", 1, true) and (string.find(t, "area", 1, true) or string.find(t, "zone", 1, true)) then
-				local btn = d:IsA("GuiButton") and d or descendantGuiButton(d)
+				local btn = d:IsA("GuiButton") and d or ARUI.descendantGuiButton(d)
 				if btn then
 					local vis = true
 					pcall(function()
 						vis = btn.Visible == true
 					end)
 					if vis then
-						lastReturnAreaGuiTick = now
+						Ticks.lastReturnAreaGuiTick = now
 						local fired = clickGuiButtonRobust(btn)
 						log("Return-to-area GUI", fired, btn:GetFullName())
 						return
@@ -2173,8 +3086,9 @@ local function tryClickReturnToMaxAreaButton()
 	end
 end
 
---- Колбэки GoalGenerators иногда возвращают Displays при Priority=nil (напр. пустой Goals.Priorities в декомпиле/билде).
-local function normalizeGoalCallbackResult(res)
+local ARG = {}
+
+function ARG.normalizeGoalCallbackResult(res)
 	if type(res) ~= "table" or cfg().questNormalizeNilGoalPriority == false then
 		return res
 	end
@@ -2192,7 +3106,7 @@ local function normalizeGoalCallbackResult(res)
 	return res
 end
 
-local function pickTrackedObjective()
+function ARG.pickTrackedObjective()
 	local pickDiag = {
 		generatorCount = 0,
 		fflagOff = 0,
@@ -2207,7 +3121,7 @@ local function pickTrackedObjective()
 		end
 	end
 
-	if not GoalCmds or not FFlags or not Functions then
+	if not GoalCmds or not FFlags then
 		pickDiag.missingModules = true
 		hint("GoalCmds_or_FFlags_missing")
 		AutoRankRuntimeState.diagGoalPick = pickDiag
@@ -2240,7 +3154,7 @@ local function pickTrackedObjective()
 		else
 			local ok, res = pcall(gen.Callback)
 			if ok and type(res) == "table" then
-				res = normalizeGoalCallbackResult(res)
+				res = ARG.normalizeGoalCallbackResult(res)
 			end
 			if not ok then
 				pickDiag.callbackErr += 1
@@ -2250,12 +3164,10 @@ local function pickTrackedObjective()
 				hint(gen.Name .. ":no_Priority_or_Displays")
 			else
 				pickDiag.validCallbacks += 1
-				if best and res.Priority <= best.Priority then
-					res = best
-				else
+				if not best or res.Priority > best.Priority then
 					res._generatorName = gen.Name
+					best = res
 				end
-				best = res
 			end
 		end
 	end
@@ -2263,7 +3175,7 @@ local function pickTrackedObjective()
 	return best
 end
 
-local function objectiveSnippetForDiag(tracked, maxLen)
+function ARG.objectiveSnippetForDiag(tracked, maxLen)
 	if not tracked then
 		return ""
 	end
@@ -2289,80 +3201,12 @@ local function objectiveSnippetForDiag(tracked, maxLen)
 	return s
 end
 
-local function refreshTrackedObjective()
-	local now = tick()
-	if now - lastQuestPickTick < (cfg().questAssistInterval or 0.65) then
-		return cachedTrackedObjective
-	end
-	lastQuestPickTick = now
-
-	local blocked, envWhy = questObjectiveEnvironmentBlockedDetail()
-	if blocked then
-		cachedTrackedObjective = nil
-		AutoRankRuntimeState.diagQuest = {
-			ok = false,
-			where = "environment",
-			detail = envWhy or "blocked",
-		}
-		return nil
-	end
-
-	local tab = nil
-	pcall(function()
-		tab = TabController and TabController.Get and TabController.Get()
-	end)
-	if tab and QUEST_TAB_BLOCKS[tab] then
-		cachedTrackedObjective = nil
-		AutoRankRuntimeState.diagQuest = {
-			ok = false,
-			where = "tab_blocked",
-			detail = tostring(tab),
-		}
-		return nil
-	end
-
-	cachedTrackedObjective = pickTrackedObjective()
-	if cachedTrackedObjective then
-		AutoRankRuntimeState.diagQuest = {
-			ok = true,
-			generator = cachedTrackedObjective._generatorName,
-			snippet = objectiveSnippetForDiag(cachedTrackedObjective),
-		}
-	else
-		local dg = AutoRankRuntimeState.diagGoalPick
-		local detail = "generators_empty_or_fflag"
-		if dg then
-			detail = string.format(
-				"gens=%d fflagOff=%d cbErr=%d badShape=%d valid=%d",
-				dg.generatorCount or 0,
-				dg.fflagOff or 0,
-				dg.callbackErr or 0,
-				dg.invalidShape or 0,
-				dg.validCallbacks or 0
-			)
-			if dg.blockedTab then
-				detail = detail .. " tab=" .. dg.blockedTab
-			end
-			if dg.missingModules then
-				detail = "modules_missing"
-			end
-		end
-		AutoRankRuntimeState.diagQuest = {
-			ok = false,
-			where = "no_goal",
-			detail = detail,
-		}
-	end
-	return cachedTrackedObjective
-end
-
---- Цепочка «стрелки»: для каждого Display первый шаг — либо мир (Part), либо GUI (как Goals.ProcessClickSequence → GUITarget в Target).
-local function tryClickGuiTargetTree(gui)
+function ARG.tryClickGuiTargetTree(gui)
 	if not gui or not cfg().questClickGuiTargets then
 		return false
 	end
 	local now = tick()
-	if now - lastQuestGuiClickTick < (cfg().questGuiClickInterval or 0.38) then
+	if now - Ticks.lastQuestGuiClickTick < (cfg().questGuiClickInterval or 0.38) then
 		return false
 	end
 	local targetBtn = nil
@@ -2374,7 +3218,7 @@ local function tryClickGuiTargetTree(gui)
 	if not targetBtn then
 		return false
 	end
-	lastQuestGuiClickTick = now
+	Ticks.lastQuestGuiClickTick = now
 	return clickGuiButtonRobust(targetBtn)
 end
 
@@ -2410,6 +3254,436 @@ function QuestAssist.objectiveTextLower(tracked)
 	return string.lower(QuestAssist.flattenObjectiveText(tracked))
 end
 
+function QuestAssist.blobMentionsPotionUse(blob)
+	if type(blob) ~= "string" or blob == "" then
+		return false
+	end
+	if not string.find(blob, "potion", 1, true) then
+		return false
+	end
+	if string.find(blob, "consume", 1, true) or string.find(blob, "drink", 1, true) then
+		return true
+	end
+	if string.find(blob, "use ", 1, true) or string.find(blob, " use ", 1, true) then
+		return true
+	end
+	if string.find(blob, "use", 1, true) and string.find(blob, "tier", 1, true) then
+		return true
+	end
+	if string.find(blob, "tier", 1, true) and string.find(blob, "/", 1, true) then
+		return true
+	end
+	-- Прогресс "0 / 4" и "0/4"
+	if string.match(blob, "%d+%s*/%s*%d+") and string.find(blob, "use", 1, true) then
+		return true
+	end
+	return false
+end
+
+function QuestAssist.potionTierRomanFromBlob(blob)
+	local romanOrdered = {
+		{ "tier viii", 8 },
+		{ "tier vii", 7 },
+		{ "tier ix", 9 },
+		{ "tier iii", 3 },
+		{ "tier x", 10 },
+		{ "tier iv", 4 },
+		{ "tier ii", 2 },
+		{ "tier vi", 6 },
+		{ "tier v", 5 },
+		{ "tier i", 1 },
+	}
+	table.sort(romanOrdered, function(a, b)
+		return #a[1] > #b[1]
+	end)
+	for _, pair in ipairs(romanOrdered) do
+		if string.find(blob, pair[1], 1, true) then
+			return pair[2]
+		end
+	end
+	local numStr = string.match(blob, "tier%s*(%d+)")
+	local nDigit = tonumber(numStr)
+	if nDigit and nDigit >= 1 and nDigit <= 15 then
+		return nDigit
+	end
+	return nil
+end
+
+function QuestAssist.potionTierHintFromObjectiveBlob(blob)
+	if cfg().questConsumeHonorObjectivePotionTier == false then
+		return nil
+	end
+	if not QuestAssist.blobMentionsPotionUse(blob) then
+		return nil
+	end
+	return QuestAssist.potionTierRomanFromBlob(blob)
+end
+
+function QuestAssist.scrapePlayerGuiPotionQuestBlob()
+	if cfg().questConsumeScrapeGuiForPotionTier == false then
+		return ""
+	end
+	local iv = tonumber(cfg().questConsumeGuiScrapeInterval) or 2
+	local now = tick()
+	if now - potionQuestGuiBlobCacheTick < iv then
+		return potionQuestGuiBlobCache
+	end
+	local maxLbl = math.clamp(tonumber(cfg().questConsumeGuiScrapeMaxLabels) or 400, 50, 2000)
+	local prio, rest = {}, {}
+	local np, nr = 0, 0
+	local pg = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+	if not pg then
+		potionQuestGuiBlobCacheTick = now
+		return ""
+	end
+	local lower = string.lower
+	local function ancestryQuestHint(inst)
+		local cur, steps = inst, 0
+		while cur and steps < 12 do
+			local nm = lower(cur.Name)
+			if string.find(nm, "goal", 1, true) or string.find(nm, "rank", 1, true) or string.find(nm, "quest", 1, true)
+				or string.find(nm, "challenge", 1, true) then
+				return true
+			end
+			cur = cur.Parent
+			steps += 1
+		end
+		return false
+	end
+	local function pushText(raw, inst)
+		local tl = lower(tostring(raw or ""))
+		if tl == "" or not (string.find(tl, "potion", 1, true) or string.find(tl, "tier", 1, true)) then
+			return
+		end
+		if ancestryQuestHint(inst) then
+			if np < maxLbl then
+				np += 1
+				table.insert(prio, tl)
+			end
+		else
+			if nr < maxLbl then
+				nr += 1
+				table.insert(rest, tl)
+			end
+		end
+	end
+	for _, d in ipairs(pg:GetDescendants()) do
+		if np + nr >= maxLbl then
+			break
+		end
+		if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+			pcall(function()
+				pushText(d.Text or "", d)
+			end)
+		elseif d:IsA("StringValue") then
+			local v = ""
+			pcall(function()
+				v = d.Value or ""
+			end)
+			pushText(v, d)
+		end
+	end
+	local parts = {}
+	for i = 1, #prio do
+		table.insert(parts, prio[i])
+	end
+	for i = 1, #rest do
+		table.insert(parts, rest[i])
+	end
+	local blob = table.concat(parts, " | ")
+	potionQuestGuiBlobCache = blob
+	potionQuestGuiBlobCacheTick = now
+	return blob
+end
+
+-- Тексты ранговых целей (Goals справа, Rank UI) — клиентские GoalCmds часто возвращают no_goal из executor.
+function QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
+	if cfg().questScrapeRankGoalsForMiscSpawn == false then
+		return ""
+	end
+	local iv = tonumber(cfg().questRankGoalsGuiScrapeInterval) or 2
+	local now = tick()
+	if now - rankGoalsGuiBlobCacheTick < iv then
+		return rankGoalsGuiBlobCache
+	end
+	rankGoalsGuiBlobCacheTick = now
+	local maxLbl = math.clamp(tonumber(cfg().questRankGoalsGuiScrapeMaxLabels) or 320, 40, 1200)
+	local parts = {}
+	local n = 0
+	local lower = string.lower
+
+	local function consumeRoot(root)
+		if not root then
+			return
+		end
+		local list = nil
+		local okD = pcall(function()
+			list = root:GetDescendants()
+		end)
+		if not okD or type(list) ~= "table" then
+			return
+		end
+		for _, d in ipairs(list) do
+			if n >= maxLbl then
+				break
+			end
+			local raw = ""
+			if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+				pcall(function()
+					raw = lower(tostring(d.Text or ""))
+				end)
+			elseif d:IsA("StringValue") then
+				pcall(function()
+					raw = lower(tostring(d.Value or ""))
+				end)
+			end
+			if raw ~= "" then
+				if #raw > 360 then
+					raw = string.sub(raw, 1, 360)
+				end
+				n += 1
+				table.insert(parts, raw)
+			end
+		end
+	end
+
+	local goalsFromRankUI = nil
+	pcall(function()
+		if GUI and type(GUI.Rank) == "function" then
+			local rk = GUI.Rank()
+			local fr = rk and rk.Frame
+			local side = fr and fr.Side
+			local mid = side and side.Middle
+			goalsFromRankUI = mid and mid.Goals or nil
+		end
+	end)
+	if goalsFromRankUI then
+		consumeRoot(goalsFromRankUI)
+	end
+
+	pcall(function()
+		if GUI and type(GUI.GoalsSide) == "function" then
+			local gs = GUI.GoalsSide()
+			local frm = gs and gs.Frame
+			if frm then
+				local q = frm:FindFirstChild("Quests", true)
+				if q then
+					consumeRoot(q)
+				end
+			end
+		end
+	end)
+
+	if #parts == 0 and n < math.min(maxLbl, 80) then
+		local pg = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+		if pg then
+			for _, sg in ipairs(pg:GetChildren()) do
+				if sg:IsA("ScreenGui") and sg.Enabled ~= false then
+					local ln = lower(sg.Name)
+					if string.find(ln, "rank", 1, true) then
+						consumeRoot(sg)
+						break
+					end
+				end
+			end
+		end
+	end
+
+	local blob = table.concat(parts, " | ")
+	rankGoalsGuiBlobCache = blob
+	return blob
+end
+
+function QuestAssist.rankGuiBlobSuggestInstanceIds(blobLow)
+	local ids = {}
+	local function append(id)
+		for _, e in ipairs(ids) do
+			if e == id then
+				return
+			end
+		end
+		table.insert(ids, id)
+	end
+	if string.find(blobLow, "advanced fishing", 1, true) then
+		append("AdvancedFishing")
+	end
+	if string.find(blobLow, "fishing event", 1, true) or string.find(blobLow, "fishingevent", 1, true) then
+		append("FishingEvent")
+	end
+	local fishingWord = string.find(blobLow, "fishing", 1, true) ~= nil
+	local mini = string.find(blobLow, "minigame", 1, true) ~= nil
+	local catch = string.find(blobLow, "catch", 1, true) ~= nil
+	local fish = string.find(blobLow, "fish", 1, true) ~= nil
+	if fishingWord and mini then
+		append("Fishing")
+	elseif fish and catch and (mini or fishingWord) then
+		append("Fishing")
+	end
+	return ids
+end
+
+--[[ Восстановление Instances-цели (как GoalCmds.Modules.Instances): Target = GetEnterPart. ]]
+function QuestAssist.pickSynthTrackedObjectiveFromRankGui()
+	if cfg().questSynthRankTrackedFromGui == false then
+		return nil
+	end
+	if InstancingCmds == nil or type(InstancingCmds.GetEnterPart) ~= "function" then
+		return nil
+	end
+	local inInstOk, inside = pcall(function()
+		return InstancingCmds.IsInInstance()
+	end)
+	if inInstOk and inside then
+		return nil
+	end
+	local rawAll = QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
+	if type(rawAll) ~= "string" or rawAll == "" then
+		return nil
+	end
+	local blobLow = string.lower(rawAll)
+	local cand = QuestAssist.rankGuiBlobSuggestInstanceIds(blobLow)
+	if #cand == 0 then
+		return nil
+	end
+	for _, cid in ipairs(cand) do
+		local enterPart = nil
+		local gpOk = pcall(function()
+			enterPart = InstancingCmds.GetEnterPart(cid)
+		end)
+		if gpOk and enterPart ~= nil then
+			local snippet = rawAll
+			if #snippet > 280 then
+				snippet = string.sub(snippet, 1, 280) .. "…"
+			end
+			return {
+				Priority = 100000,
+				_generatorName = "RankGuiSynth_" .. cid,
+				_rankGuiSynth = true,
+				_synthInstanceId = cid,
+				Displays = {
+					{ Description = snippet },
+					{ Target = enterPart },
+				},
+			}
+		end
+	end
+	return nil
+end
+
+function ARG.refreshTrackedObjective()
+	local now = tick()
+	local curZone = safeCurrentZone()
+	if curZone ~= cachedTrackedObjectiveZone then
+		cachedTrackedObjective = nil
+		cachedTrackedObjectiveZone = curZone
+		Ticks.lastQuestPickTick = 0
+		clearRankGuiSynthProtection()
+	end
+	if now - Ticks.lastQuestPickTick < (cfg().questAssistInterval or 0.65) then
+		return cachedTrackedObjective
+	end
+	Ticks.lastQuestPickTick = now
+
+	local blocked, envWhy = ARZone.questObjectiveEnvironmentBlockedDetail()
+	if blocked then
+		cachedTrackedObjective = nil
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "environment",
+			detail = envWhy or "blocked",
+		}
+		return nil
+	end
+
+	local tab = nil
+	pcall(function()
+		tab = TabController and TabController.Get and TabController.Get()
+	end)
+	if tab and QUEST_TAB_BLOCKS[tab] then
+		cachedTrackedObjective = nil
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "tab_blocked",
+			detail = tostring(tab),
+		}
+		return nil
+	end
+
+	cachedTrackedObjective = ARG.pickTrackedObjective()
+	if cachedTrackedObjective and cachedTrackedObjective._rankGuiSynth ~= true then
+		clearRankGuiSynthProtection()
+	end
+	if not cachedTrackedObjective and cfg().questSynthRankTrackedFromGui ~= false then
+		local syn = QuestAssist.pickSynthTrackedObjectiveFromRankGui()
+		if syn then
+			cachedTrackedObjective = syn
+			bumpRankGuiSynthProtectionFromTracked(syn)
+			AutoRankRuntimeState.diagQuest = {
+				ok = true,
+				generator = syn._generatorName,
+				snippet = ARG.objectiveSnippetForDiag(syn),
+				synthRankGui = true,
+			}
+			return cachedTrackedObjective
+		end
+	end
+	if cachedTrackedObjective then
+		if cachedTrackedObjective._rankGuiSynth == true then
+			bumpRankGuiSynthProtectionFromTracked(cachedTrackedObjective)
+		end
+		AutoRankRuntimeState.diagQuest = {
+			ok = true,
+			generator = cachedTrackedObjective._generatorName,
+			snippet = ARG.objectiveSnippetForDiag(cachedTrackedObjective),
+			synthRankGui = cachedTrackedObjective._rankGuiSynth == true,
+		}
+	else
+		local dg = AutoRankRuntimeState.diagGoalPick
+		local detail = "generators_empty_or_fflag"
+		if dg then
+			detail = string.format(
+				"gens=%d fflagOff=%d cbErr=%d badShape=%d valid=%d",
+				dg.generatorCount or 0,
+				dg.fflagOff or 0,
+				dg.callbackErr or 0,
+				dg.invalidShape or 0,
+				dg.validCallbacks or 0
+			)
+			if dg.blockedTab then
+				detail = detail .. " tab=" .. dg.blockedTab
+			end
+			if dg.missingModules then
+				detail = "modules_missing"
+			end
+		end
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "no_goal",
+			detail = detail,
+		}
+	end
+	return cachedTrackedObjective
+end
+
+function QuestAssist.potionTierRequiredByObjective(tracked)
+	if not tracked then
+		return nil
+	end
+	return QuestAssist.potionTierHintFromObjectiveBlob(QuestAssist.objectiveTextLower(tracked))
+end
+
+function QuestAssist.resolvePotionQuestTargetTier(tracked)
+	local fromTr = QuestAssist.potionTierRequiredByObjective(tracked)
+	if type(fromTr) == "number" then
+		return fromTr
+	end
+	local scraped = QuestAssist.scrapePlayerGuiPotionQuestBlob()
+	if scraped ~= "" then
+		return QuestAssist.potionTierHintFromObjectiveBlob(scraped)
+	end
+	return nil
+end
+
 function QuestAssist.blobMatchesList(blobLower, list)
 	if type(list) ~= "table" or blobLower == "" then
 		return false
@@ -2438,12 +3712,53 @@ function QuestAssist.generatorMatchesPriorityList(tracked)
 	return false
 end
 
---- true = не трогать Displays (телепорт/промпты/GUI) для этой цели
-function QuestAssist.shouldSkipObjectiveInteraction(tracked)
+function QuestAssist.objectiveMentionsDigsiteMinigame(tracked)
 	if not tracked then
 		return false
 	end
 	local blob = QuestAssist.objectiveTextLower(tracked)
+	local gen = string.lower(tostring(tracked._generatorName or ""))
+	return string.find(gen, "digsite", 1, true) ~= nil or string.find(blob, "digsite", 1, true) ~= nil
+end
+
+function QuestAssist.objectiveTargetsAdvancedDigsite(tracked)
+	if not tracked then
+		return false
+	end
+	local blob = QuestAssist.objectiveTextLower(tracked)
+	local gen = string.gsub(string.gsub(string.gsub(string.lower(tostring(tracked._generatorName or "")), " ", ""), "%(", ""), "%)", "")
+	if string.find(blob, "advanced digsite", 1, true) then
+		return true
+	end
+	if string.find(gen, "advanceddigsite", 1, true) then
+		return true
+	end
+	return false
+end
+
+function QuestAssist.shouldSkipObjectiveInteraction(tracked)
+	if not tracked then
+		return false
+	end
+	-- Synth из Rank GUI: имя содержит "…_Fishing", blob — "fishing" → иначе срабатывает questIgnoreMinigames и не вызывается tryQuestResolveDisplayTargets (нет тепорта к GetEnterPart).
+	if tracked._rankGuiSynth == true then
+		return false
+	end
+	local blob = QuestAssist.objectiveTextLower(tracked)
+	if cfg().questBlockDigsiteEntryWithoutShovel ~= false then
+		local blockAdvOnly = cfg().questBlockAdvancedDigsiteOnlyWithoutShovel ~= false
+		local shouldBlockDig = blockAdvOnly and QuestAssist.objectiveTargetsAdvancedDigsite(tracked)
+			or not blockAdvOnly and QuestAssist.objectiveMentionsDigsiteMinigame(tracked)
+		if shouldBlockDig then
+			local s = Save and Save.Get and Save.Get()
+			local hasOk = AR.QuestWorldHelpers
+				and type(AR.QuestWorldHelpers.saveInventoryHasUsableShovelForAdvancedDigsite) == "function"
+				and AR.QuestWorldHelpers.saveInventoryHasUsableShovelForAdvancedDigsite(s)
+			if s and not hasOk then
+				return true
+			end
+		end
+	end
 	if QuestAssist.blobMatchesList(blob, cfg().questBlockedObjectiveSubstrings or {}) then
 		return true
 	end
@@ -2486,6 +3801,75 @@ function QuestAssist.shouldSkipObjectiveInteraction(tracked)
 	return isMinigame
 end
 
+function QuestAssist.objectiveMentionsEggOrHatch(tracked)
+	if not tracked then
+		return false
+	end
+	local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
+	return string.find(blob, "hatch", 1, true) ~= nil or string.find(blob, "egg", 1, true) ~= nil
+end
+
+function QuestAssist.generatorLooksMachineStarter(genName)
+	if type(genName) ~= "string" or genName == "" then
+		return false
+	end
+	local g = string.lower(genName)
+	if string.find(g, "machine", 1, true) then
+		if string.find(g, "upgrade", 1, true) or string.find(g, "potions", 1, true) or string.find(g, "enchants", 1, true) then
+			return true
+		end
+	end
+	local subs = cfg().questMachineGuiStuckGeneratorSubstrings
+	if type(subs) == "table" then
+		for _, s in ipairs(subs) do
+			if type(s) == "string" and s ~= "" and string.find(g, string.lower(s), 1, true) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function QuestAssist.onQuestGuiClickForStuck(genName, tracked)
+	local maxC = tonumber(cfg().questMachineGuiStuckMaxClicks)
+	if not maxC or maxC <= 0 then
+		return
+	end
+	if not QuestAssist.generatorLooksMachineStarter(genName) then
+		questMachineGuiStuckState.snippet = ""
+		questMachineGuiStuckState.clicks = 0
+		questMachineGuiStuckState.firstAt = 0
+		return
+	end
+	local snip = ARG.objectiveSnippetForDiag(tracked, 120)
+	local now = tick()
+	if snip ~= questMachineGuiStuckState.snippet then
+		questMachineGuiStuckState.snippet = snip
+		questMachineGuiStuckState.clicks = 1
+		questMachineGuiStuckState.firstAt = now
+		return
+	end
+	questMachineGuiStuckState.clicks += 1
+	maxC = math.max(3, maxC)
+	local win = math.max(12, tonumber(cfg().questMachineGuiStuckWindowSec) or 45)
+	if questMachineGuiStuckState.clicks < maxC then
+		return
+	end
+	if now - questMachineGuiStuckState.firstAt > win then
+		questMachineGuiStuckState.clicks = 1
+		questMachineGuiStuckState.firstAt = now
+		return
+	end
+	questMachineGuiStuckState.clicks = 0
+	questMachineGuiStuckState.snippet = ""
+	traceThrottled("quest_machine_gui_stuck", 15, "quest", "machine GUI stuck — CloseTab", genName)
+	pcall(function()
+		if TabController and type(TabController.CloseTab) == "function" then
+			TabController.CloseTab(cfg().autoCloseTabUseForce == true or nil)
+		end
+	end)
+end
+
 function QuestAssist.tryKeywordCooldownReset(tracked)
 	if not cfg().questAssistObjectiveKeywords or not tracked then
 		return
@@ -2495,31 +3879,160 @@ function QuestAssist.tryKeywordCooldownReset(tracked)
 		return string.find(blob, s, 1, true) ~= nil
 	end
 	if has("egg slot") or has("hatch slot") or has("extra eggs") or has("more eggs") then
-		lastEggSlotTick = 0
+		Ticks.lastEggSlotTick = 0
 	end
 	if has("equip slot") or has("pet slot") or has("equip pet") then
-		lastEquipSlotTick = 0
+		Ticks.lastEquipSlotTick = 0
 	end
 	if has("upgrade") or has("rebirth shrine") or has("enchant machine") or has("potion machine") then
-		lastUpgradePurchaseTick = 0
+		Ticks.lastUpgradePurchaseTick = 0
 	end
 	if has("rank reward") or has("redeem reward") or has("claim reward") then
-		lastClaimTick = 0
+		Ticks.lastClaimTick = 0
 	end
 	if has("rank up") then
-		lastRankUpGuiTick = 0
+		Ticks.lastRankUpGuiTick = 0
 	end
 	if has("travel ") or has("traverse") or has("void island") or has("tech ") or has("fantasy ") then
-		lastTeleportTick = 0
-		lastTravelWorldDirectNetworkTick = 0
+		Ticks.lastTeleportTick = 0
+		Ticks.lastTravelWorldDirectNetworkTick = 0
 	end
 	if has("farming") or has("farm token") or has("farming token") or has("halloween") or has("trick or treat") then
-		lastQuestPickTick = 0
+		Ticks.lastQuestPickTick = 0
 	end
 end
 
---- Поиск ближайшего ProximityPrompt к игроку в workspace
-local function getClosestProximityPrompt(maxDist)
+local ARQ = {}
+
+function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
+	if cfg().questSpawnInventoryBreakables == false then
+		return
+	end
+	if type(blob) ~= "string" or blob == "" then
+		return
+	end
+	local now = tick()
+	if now - Ticks.lastQuestSpawnInventoryBreakTick < (cfg().questSpawnInventoryBreakablesInterval or 2.75) then
+		return
+	end
+	if safeIsInInstance() then
+		return
+	end
+	local z = safeCurrentZone()
+	if z == nil or z == false or z == "" then
+		return
+	end
+	if not safeInDottedBox() then
+		return
+	end
+	if cfg().questSpawnInventorySkipWorldSpawnObjectives ~= false then
+		if string.find(blob, "randomly spawned", 1, true) or string.find(blob, "in best area", 1, true) then
+			return
+		end
+	end
+	local s = Save and Save.Get and Save.Get()
+	if not s or type(s.Inventory) ~= "table" or type(s.Inventory.Misc) ~= "table" then
+		return
+	end
+
+	local function miscStackN(data)
+		return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+	end
+	local function miscUidForIds(ids)
+		local want = {}
+		for _, id in ipairs(ids) do
+			want[id] = true
+		end
+		for uid, data in pairs(s.Inventory.Misc) do
+			if type(uid) == "string" and type(data) == "table" and want[data.id] and miscStackN(data) >= 1 then
+				return uid
+			end
+		end
+		return nil
+	end
+
+	local function try(remote, detail, ...)
+		local a, b = AR.Net.invoke(remote, ...)
+		if a ~= nil and a ~= false then
+			Ticks.lastQuestSpawnInventoryBreakTick = now
+			log("quest_misc_spawn", remote, detail, ...)
+			traceThrottled(
+				"misc_spawn_" .. tostring(remote),
+				8,
+				"pulse.quest",
+				"inventory spawn",
+				remote,
+				detail,
+				...
+			)
+			return true
+		end
+		if cfg().verboseLog then
+			traceThrottled("misc_spawn_fail_" .. tostring(remote), 10, "pulse.quest", remote, "fail", a, b, detail)
+		end
+		return false
+	end
+
+	if string.find(blob, "rainbow", 1, true) and string.find(blob, "mini", 1, true) and string.find(blob, "chest", 1, true) then
+		if miscUidForIds({ "Rainbow Mini Chest" }) and try("GiftBag_Open", "Rainbow Mini Chest", "Rainbow Mini Chest") then
+			return
+		end
+	elseif string.find(blob, "mini", 1, true) and string.find(blob, "chest", 1, true) then
+		if miscUidForIds({ "Mini Chest" }) and try("GiftBag_Open", "Mini Chest", "Mini Chest") then
+			return
+		end
+	end
+	if string.find(blob, "coin jar", 1, true) then
+		local uid = miscUidForIds({ "Basic Coin Jar", "Magic Coin Jar", "Giant Coin Jar" })
+		if uid and try("CoinJar_Spawn", "coin jar", uid) then
+			return
+		end
+	end
+	if string.find(blob, "item jar", 1, true) then
+		local uid = miscUidForIds({ "Basic Item Jar" })
+		if uid and try("ItemJar_Spawn", "item jar", uid) then
+			return
+		end
+	end
+	if string.find(blob, "comet", 1, true) then
+		local uid = miscUidForIds({ "Comet" })
+		if uid and try("Comet_Spawn", "comet", uid) then
+			return
+		end
+	end
+	if string.find(blob, "pinata", 1, true) then
+		local uid = miscUidForIds({ "Mini Pinata" })
+		if uid and try("MiniPinata_Consume", "mini pinata", uid) then
+			return
+		end
+	end
+	if string.find(blob, "lucky block", 1, true) or string.find(blob, "luckyblock", 1, true) then
+		local uid = miscUidForIds({ "Mini Lucky Block" })
+		if uid and try("MiniLuckyBlock_Consume", "mini lucky block", uid) then
+			return
+		end
+	end
+end
+
+function ARQ.tryQuestSpawnInventoryBreakables(tracked)
+	local chunks = {}
+	if type(tracked) == "table" then
+		local flat = QuestAssist.flattenObjectiveText(tracked)
+		if type(flat) == "string" and flat ~= "" then
+			table.insert(chunks, string.lower(flat))
+		end
+	end
+	local rg = QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
+	if type(rg) == "string" and rg ~= "" then
+		table.insert(chunks, rg)
+	end
+	if #chunks == 0 then
+		return
+	end
+	ARQ.tryQuestSpawnInventoryBreakablesFromBlob(table.concat(chunks, " | "))
+end
+
+function ARQ.getClosestProximityPrompt(maxDist)
 	local ch = LocalPlayer.Character
 	local pp = ch and ch.PrimaryPart
 	if not pp then return nil end
@@ -2548,7 +4061,6 @@ local function getClosestProximityPrompt(maxDist)
 		end
 	end
 
-	-- Ищем в Interact-папке спавна или глобально в Map
 	local folder = nil
 	pcall(function() folder = ZonesUtil and ZonesUtil.GetInteractFolder and ZonesUtil.GetInteractFolder("Rainbow Road") end)
 	if folder then scan(folder) end
@@ -2566,8 +4078,7 @@ local function getClosestProximityPrompt(maxDist)
 	return best
 end
 
---- Имя генератора GoalCmds «Travel To Tech» (как в ReplicatedStorage...Transitions.Travel To Tech).
-local function isTravelToTechGeneratorName(genName)
+function ARQ.isTravelToTechGeneratorName(genName)
 	local g = string.lower(genName or "")
 	return string.find(g, "travel to tech", 1, true) ~= nil
 		or string.find(g, "tech starter", 1, true) ~= nil
@@ -2575,8 +4086,7 @@ local function isTravelToTechGeneratorName(genName)
 		or string.find(g, "tech world", 1, true) ~= nil
 end
 
---- Поиск точки входа в Tech World (раньше была ракета, теперь портал). Ищем любой ProximityPrompt в Interact-папке Rainbow Road.
-local function rainbowRoadRocketInteractPart()
+function ARQ.rainbowRoadRocketInteractPart()
 	if not ZonesUtil or type(ZonesUtil.GetInteractFolder) ~= "function" then
 		return nil
 	end
@@ -2587,14 +4097,12 @@ local function rainbowRoadRocketInteractPart()
 	if not folder then
 		return nil
 	end
-	-- Ищем сначала по старым путям (Rocket / Frame -> Rocket)
 	local frame = folder:FindFirstChild("Frame")
 	local rocket = frame and frame:FindFirstChild("Rocket") or folder:FindFirstChild("Rocket")
 	local ri = rocket and rocket:FindFirstChild("RocketInteract")
 	if ri and (ri:IsA("BasePart") or (ri:IsA("Model") and ri.PrimaryPart)) then
 		return ri
 	end
-	-- Фолбэк: ищем первый попавшийся ProximityPrompt внутри папки интерактивов Rainbow Road
 	local fallbackPart = nil
 	local function searchPP(inst)
 		if fallbackPart then return end
@@ -2612,15 +4120,14 @@ local function rainbowRoadRocketInteractPart()
 	return fallbackPart
 end
 
---- Tech Rocket (World 1 → 2): Network.Fire("RequestTechRocket") — см. Scripts.Game.Misc "Tech Rocket" / SetupRocketInteract + Message.New.
-local function tryTravelWorldDirectNetworkFire(genName)
+function ARQ.tryTravelWorldDirectNetworkFire(genName)
 	if cfg().questTravelWorldDirectNetwork == false then
 		return false
 	end
 	if not Network or type(Network.Fire) ~= "function" then
 		return false
 	end
-	local remoteName = isTravelToTechGeneratorName(genName) and "RequestTechRocket" or nil
+	local remoteName = ARQ.isTravelToTechGeneratorName(genName) and "RequestTechRocket" or nil
 	if not remoteName then
 		return false
 	end
@@ -2632,8 +4139,8 @@ local function tryTravelWorldDirectNetworkFire(genName)
 		end)
 		if type(rb) == "number" and rb < 4 then
 			local nowW = tick()
-			if nowW - lastTravelTechRebirthWarnTick > 10 then
-				lastTravelTechRebirthWarnTick = nowW
+			if nowW - Ticks.lastTravelTechRebirthWarnTick > 10 then
+				Ticks.lastTravelTechRebirthWarnTick = nowW
 				trace(
 					"pulse.quest",
 					"Travel To Tech: Rebirth",
@@ -2646,23 +4153,21 @@ local function tryTravelWorldDirectNetworkFire(genName)
 	end
 	local now = tick()
 	local iv = tonumber(cfg().questTravelWorldDirectNetworkInterval) or 2.6
-	if now - lastTravelWorldDirectNetworkTick < iv then
+	if now - Ticks.lastTravelWorldDirectNetworkTick < iv then
 		return false
 	end
-	lastTravelWorldDirectNetworkTick = now
-	local ok, err = pcall(function()
-		Network.Fire(remoteName)
-	end)
+	Ticks.lastTravelWorldDirectNetworkTick = now
+	AR.Net.fire(remoteName)
 	if cfg().log then
-		log("quest travel direct Network.Fire", remoteName, genName, ok and "ok" or err)
+		log("quest travel direct Network.Fire", remoteName, genName, "via AR.Net.fire")
 	end
 	if cfg().verboseLog then
-		traceThrottled("travelDirectNet:" .. remoteName, iv + 0.1, "pulse.quest", ok and "Network.Fire OK" or "Network.Fire FAIL", remoteName, genName)
+		traceThrottled("travelDirectNet:" .. remoteName, iv + 0.1, "pulse.quest", "Network.Fire dispatched (AR.Net)", remoteName, genName)
 	end
-	return ok == true
+	return true
 end
 
-local function tryQuestTargetExecutorExtras(inst, pp, genName)
+function ARQ.tryQuestTargetExecutorExtras(inst, pp, genName)
 	if not inst then
 		return
 	end
@@ -2671,10 +4176,9 @@ local function tryQuestTargetExecutorExtras(inst, pp, genName)
 			Exec.fireClickDetector(inst, 0)
 			log("quest Exec.fireClickDetector", genName)
 		end
-		tryTravelWorldDirectNetworkFire(genName)
+		ARQ.tryTravelWorldDirectNetworkFire(genName)
 		return
 	end
-	--- Travel To Tech / Void / Fantasy: в Studio Target = часть (RocketInteract), ProximityPrompt — потомок (клавиша E).
 	local ppNested = inst:FindFirstChildWhichIsA("ProximityPrompt", true)
 	if ppNested and ppNested:IsA("ProximityPrompt") then
 		Exec.fireProximityPrompt(ppNested)
@@ -2699,10 +4203,10 @@ local function tryQuestTargetExecutorExtras(inst, pp, genName)
 			log("quest Exec.fireTouchInterest", genName)
 		end
 	end
-	tryTravelWorldDirectNetworkFire(genName)
+	ARQ.tryTravelWorldDirectNetworkFire(genName)
 end
 
-local function tryQuestResolveDisplayTargets(tracked)
+function ARQ.tryQuestResolveDisplayTargets(tracked)
 	if not tracked or type(tracked.Displays) ~= "table" then
 		return
 	end
@@ -2731,7 +4235,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 		local t = disp and disp.Target
 		if typeof(t) == "Instance" and t:IsA("ClickDetector") then
 			handledPhysical = true
-			tryQuestTargetExecutorExtras(t, pp, genName)
+			ARQ.tryQuestTargetExecutorExtras(t, pp, genName)
 			return
 		end
 	end
@@ -2748,7 +4252,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 					log("quest teleport →", genName, t:GetFullName())
 				end
 			end
-			tryQuestTargetExecutorExtras(t, pp, genName)
+			ARQ.tryQuestTargetExecutorExtras(t, pp, genName)
 			return
 		end
 		if typeof(t) == "Instance" and t:IsA("Model") and t.PrimaryPart then
@@ -2762,7 +4266,7 @@ local function tryQuestResolveDisplayTargets(tracked)
 					log("quest teleport →", genName, t:GetFullName())
 				end
 			end
-			tryQuestTargetExecutorExtras(t, pp, genName)
+			ARQ.tryQuestTargetExecutorExtras(t, pp, genName)
 			return
 		end
 	end
@@ -2770,16 +4274,16 @@ local function tryQuestResolveDisplayTargets(tracked)
 	for _, disp in ipairs(displays) do
 		local t = disp and disp.Target
 		if typeof(t) == "Instance" and t:IsA("GuiObject") then
-			if tryClickGuiTargetTree(t) then
+			if ARG.tryClickGuiTargetTree(t) then
 				log("quest GUI click →", genName, t:GetFullName())
+				QuestAssist.onQuestGuiClickForStuck(genName, tracked)
 				return
 			end
 		end
 	end
 
-	--- Travel To Tech: при дистанции >500 студов клиент не кладёт Target в Displays (см. Studio) — тянем к RocketInteract сами.
-	if not handledPhysical and isTravelToTechGeneratorName(genName) then
-		local bestPrompt = getClosestProximityPrompt(150)
+	if not handledPhysical and ARQ.isTravelToTechGeneratorName(genName) then
+		local bestPrompt = ARQ.getClosestProximityPrompt(150)
 		if bestPrompt and pp then
 			local anchor = bestPrompt.Parent
 			local pos = anchor:IsA("BasePart") and anchor.Position or (anchor:IsA("Model") and anchor.PrimaryPart and anchor.PrimaryPart.Position)
@@ -2790,12 +4294,11 @@ local function tryQuestResolveDisplayTargets(tracked)
 				log("quest teleport (Travel To Tech closest prompt) →", anchor:GetFullName())
 			end
 			Exec.fireProximityPrompt(bestPrompt)
-			tryTravelWorldDirectNetworkFire(genName)
+			ARQ.tryTravelWorldDirectNetworkFire(genName)
 		end
 	end
 end
-
-local function countEquippedEnchantSlots()
+function ARQ.countEquippedEnchantSlots()
 	local s = Save and Save.Get and Save.Get()
 	if not s or type(s.EquippedEnchants) ~= "table" then
 		return 0
@@ -2807,12 +4310,194 @@ local function countEquippedEnchantSlots()
 	return n
 end
 
-local function tryQuestEquipEnchantFromInventory()
-	if not cfg().questEquipEnchants or not EnchantCmds or not InventoryCmds then
+local lazyDirCaches = {
+	Enchants = { cache = nil, bad = false },
+	ZoneFlags = { cache = nil, bad = false },
+}
+
+function ARQ.getEnchantsDirectoryTable()
+	local b = lazyDirCaches.Enchants
+	if b.bad then
+		return nil
+	end
+	if b.cache ~= nil then
+		return b.cache
+	end
+	local enf = ReplicatedStorage.Library.Directory:FindFirstChild("Enchants")
+	local tbl = enf and cacheReq(enf) or nil
+	if type(tbl) == "table" then
+		b.cache = tbl
+		return tbl
+	end
+	b.bad = true
+	return nil
+end
+
+function ARQ.enchantPowerAtTier(def, tier)
+	if not def or type(tier) ~= "number" or tier < 1 then
+		return nil
+	end
+	local fn = def.Power
+	if type(fn) ~= "function" then
+		return nil
+	end
+	local ok, p = pcall(fn, tier)
+	if ok and type(p) == "number" and p > 0 then
+		return p
+	end
+	return nil
+end
+
+function ARQ.enchantMaxCopiesSameTier(enchantId, tier)
+	local dir = ARQ.getEnchantsDirectoryTable()
+	local def = dir and dir[enchantId]
+	if not def then
+		return 4
+	end
+	local thr = def.DiminishPowerThreshold
+	if type(thr) ~= "number" or thr <= 0 then
+		return 6
+	end
+	local p = ARQ.enchantPowerAtTier(def, tier)
+	if not p then
+		return 3
+	end
+	return math.max(1, math.floor(thr / p))
+end
+
+function ARQ.inventoryMaxTierByEnchantId(s)
+	local t = {}
+	if not s or not s.Inventory or not s.Inventory.Enchant then
+		return t
+	end
+	for _, data in pairs(s.Inventory.Enchant) do
+		local id = data and data.id
+		if type(id) == "string" then
+			local tn = tonumber(data.tn or data.tier or data.Tier) or 1
+			if not t[id] or tn > t[id] then
+				t[id] = tn
+			end
+		end
+	end
+	return t
+end
+
+function ARQ.enchantPriorityIdSet(priorityList)
+	local st = {}
+	if type(priorityList) == "table" then
+		for _, id in ipairs(priorityList) do
+			if type(id) == "string" then
+				st[id] = true
+			end
+		end
+	end
+	return st
+end
+
+function ARQ.buildTargetEnchantPlan(maxSlots, priorityList, tierById)
+	local plan = {}
+	local counts = {}
+	if type(priorityList) ~= "table" or maxSlots <= 0 then
+		return plan
+	end
+	for _ = 1, maxSlots do
+		local placed = false
+		for _, eid in ipairs(priorityList) do
+			local tier = tierById[eid]
+			if type(tier) == "number" and tier >= 1 then
+				local cap = ARQ.enchantMaxCopiesSameTier(eid, tier)
+				local c = counts[eid] or 0
+				if c < cap then
+					table.insert(plan, eid)
+					counts[eid] = c + 1
+					placed = true
+					break
+				end
+			end
+		end
+		if not placed then
+			break
+		end
+	end
+	return plan
+end
+
+function ARQ.enchantMultisetFromPlan(plan)
+	local c = {}
+	for _, id in ipairs(plan) do
+		c[id] = (c[id] or 0) + 1
+	end
+	return c
+end
+
+function ARQ.getEquippedEnchantRows(s)
+	local rows = {}
+	if not s or type(s.EquippedEnchants) ~= "table" then
+		return rows
+	end
+	for slot, uid in pairs(s.EquippedEnchants) do
+		if type(uid) == "string" then
+			local data = s.Inventory and s.Inventory.Enchant and s.Inventory.Enchant[uid]
+			local id = data and data.id
+			if type(id) == "string" then
+				local tn = tonumber(data.tn or data.tier or data.Tier) or 1
+				table.insert(rows, {
+					slot = slot,
+					uid = uid,
+					id = id,
+					tier = tn,
+				})
+			end
+		end
+	end
+	return rows
+end
+
+function ARQ.tryQuestEquipEnchantSimpleFill()
+	local now = tick()
+	if now - Ticks.lastEnchantEquipTick < (cfg().questEquipEnchantInterval or 2.2) then
+		return
+	end
+	local maxSlots = 0
+	pcall(function()
+		maxSlots = EnchantCmds.GetMaxEquippedEnchants() or 0
+	end)
+	if maxSlots <= 0 or ARQ.countEquippedEnchantSlots() >= maxSlots then
+		return
+	end
+	local s = Save and Save.Get and Save.Get()
+	if not s or not s.Inventory or not s.Inventory.Enchant then
+		return
+	end
+	for uid, data in pairs(s.Inventory.Enchant) do
+		local eid = data.id
+		if type(eid) == "string" and type(uid) == "string" then
+			local already = false
+			pcall(function()
+				already = EnchantCmds.IsEquipped(eid) == true
+			end)
+			if not already then
+				Ticks.lastEnchantEquipTick = now
+				pcall(function()
+					EnchantCmds.Equip(uid)
+				end)
+				log("Enchants_Equip", uid, eid)
+				break
+			end
+		end
+	end
+end
+
+function ARQ.tryQuestEquipEnchantFromInventory(eggMode)
+	if not cfg().questEquipEnchants or not EnchantCmds then
+		return
+	end
+	if cfg().dynamicEnchantLoadout == false then
+		ARQ.tryQuestEquipEnchantSimpleFill()
 		return
 	end
 	local now = tick()
-	if now - lastEnchantEquipTick < (cfg().questEquipEnchantInterval or 2.2) then
+	if now - Ticks.lastEnchantLoadoutTick < (cfg().questEquipEnchantInterval or 2.2) then
 		return
 	end
 	local maxSlots = 0
@@ -2822,38 +4507,129 @@ local function tryQuestEquipEnchantFromInventory()
 	if maxSlots <= 0 then
 		return
 	end
-	if countEquippedEnchantSlots() >= maxSlots then
+	local priority = eggMode and cfg().enchantHatchPriority or cfg().enchantFarmPriority
+	if type(priority) ~= "table" or #priority == 0 then
 		return
 	end
 	local s = Save and Save.Get and Save.Get()
-	if not s or not s.Inventory or not s.Inventory.Enchant then return end
-	
-	for uid, data in pairs(s.Inventory.Enchant) do
-		local eid = data.id
-		if type(eid) == "string" and type(uid) == "string" then
-			local already = false
-			pcall(function() already = EnchantCmds.IsEquipped(eid) == true end)
-			if not already then
-				lastEnchantEquipTick = now
-				pcall(function() EnchantCmds.Equip(uid) end)
-				log("Enchants_Equip", uid, eid)
+	if not s then
+		return
+	end
+	local tierById = ARQ.inventoryMaxTierByEnchantId(s)
+	local plan = ARQ.buildTargetEnchantPlan(maxSlots, priority, tierById)
+	if #plan == 0 then
+		Ticks.lastEnchantLoadoutTick = now
+		return
+	end
+	Ticks.lastEnchantLoadoutTick = now
+	Ticks.lastEnchantEquipTick = now
+
+	local wanted = ARQ.enchantMultisetFromPlan(plan)
+	local allowed = ARQ.enchantPriorityIdSet(priority)
+
+	local rows = ARQ.getEquippedEnchantRows(s)
+	for _, row in ipairs(rows) do
+		if not allowed[row.id] then
+			pcall(function()
+				EnchantCmds.Unequip(tonumber(row.slot) or row.slot)
+			end)
+			log("Enchants_ClearSlot", row.slot, row.id, "wrong_mode")
+		end
+	end
+
+	s = Save and Save.Get and Save.Get()
+	if not s then
+		return
+	end
+	rows = ARQ.getEquippedEnchantRows(s)
+
+	for eid, need in pairs(wanted) do
+		s = Save and Save.Get and Save.Get()
+		rows = ARQ.getEquippedEnchantRows(s or {})
+		local cands = {}
+		for _, row in ipairs(rows) do
+			if row.id == eid then
+				table.insert(cands, row)
+			end
+		end
+		if #cands > need then
+			table.sort(cands, function(a, b)
+				return a.tier < b.tier
+			end)
+			for i = need + 1, #cands do
+				pcall(function()
+					EnchantCmds.Unequip(tonumber(cands[i].slot) or cands[i].slot)
+				end)
+				log("Enchants_ClearSlot", cands[i].slot, eid, "stack_cap")
+			end
+			s = Save and Save.Get and Save.Get()
+			rows = ARQ.getEquippedEnchantRows(s or {})
+		end
+	end
+
+	s = Save and Save.Get and Save.Get()
+	rows = ARQ.getEquippedEnchantRows(s or {})
+
+	for _, row in ipairs(rows) do
+		if wanted[row.id] == nil then
+			pcall(function()
+				EnchantCmds.Unequip(tonumber(row.slot) or row.slot)
+			end)
+			log("Enchants_ClearSlot", row.slot, row.id, "not_in_plan")
+		end
+	end
+
+	s = Save and Save.Get and Save.Get()
+	if not s or not s.Inventory or not s.Inventory.Enchant then
+		return
+	end
+
+	local equippedUids = {}
+	for _, row in ipairs(ARQ.getEquippedEnchantRows(s)) do
+		equippedUids[row.uid] = true
+	end
+	local curHave = {}
+	for _, row in ipairs(ARQ.getEquippedEnchantRows(s)) do
+		curHave[row.id] = (curHave[row.id] or 0) + 1
+	end
+
+	for _, eid in ipairs(plan) do
+		while (curHave[eid] or 0) < (wanted[eid] or 0) do
+			local bestUid, bestTier = nil, -1
+			for uid, data in pairs(s.Inventory.Enchant) do
+				if type(uid) == "string" and data and data.id == eid and not equippedUids[uid] then
+					local tn = tonumber(data.tn or data.tier or data.Tier) or 1
+					if tn > bestTier then
+						bestTier = tn
+						bestUid = uid
+					end
+				end
+			end
+			if not bestUid then
 				break
+			end
+			pcall(function()
+				EnchantCmds.Equip(bestUid)
+			end)
+			log("Enchants_Equip", bestUid, eid, eggMode and "hatch" or "farm")
+			equippedUids[bestUid] = true
+			curHave[eid] = (curHave[eid] or 0) + 1
+			s = Save and Save.Get and Save.Get()
+			if not s or not s.Inventory or not s.Inventory.Enchant then
+				return
 			end
 		end
 	end
 end
 
-local function buffConsumablesInstanceBlocked()
+function ARQ.buffConsumablesInstanceBlocked()
 	if cfg().autoConsumeBuffsInInstance ~= false then
 		return false
 	end
-	local ok, ins = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	return ok and ins == true
+	return safeIsInInstance()
 end
 
-local function idInConsumableBlocklist(id)
+function ARQ.idInConsumableBlocklist(id)
 	if type(id) ~= "string" then
 		return true
 	end
@@ -2869,7 +4645,7 @@ local function idInConsumableBlocklist(id)
 	return false
 end
 
-local function countActivePotionEntries()
+function ARQ.countActivePotionEntries()
 	if not PotionCmds or not PotionCmds.GetActivePotions then
 		return 0
 	end
@@ -2888,7 +4664,7 @@ local function countActivePotionEntries()
 	return n
 end
 
-local function potionTypeAlreadyActive(potionId)
+function ARQ.potionTypeAlreadyActive(potionId)
 	if type(potionId) ~= "string" or not PotionCmds or not PotionCmds.GetActivePotions then
 		return false
 	end
@@ -2900,7 +4676,7 @@ local function potionTypeAlreadyActive(potionId)
 	return type(sub) == "table" and next(sub) ~= nil
 end
 
-local function pickPotionConsumeAmount(item)
+function ARQ.pickPotionConsumeAmount(item)
 	local am = 1
 	pcall(function()
 		am = item:GetAmount()
@@ -2918,7 +4694,7 @@ local function pickPotionConsumeAmount(item)
 	if not bulk then
 		return 1
 	end
-	local tiers = { 100, 50, 25, 10, 5, 1 }
+	local tiers = { 500, 200, 100, 50, 25, 10, 5, 1 }
 	for _, n in ipairs(tiers) do
 		if n <= am then
 			return n
@@ -2926,110 +4702,87 @@ local function pickPotionConsumeAmount(item)
 	end
 	return 1
 end
-
-local function tryQuestConsumePotion()
-	if not cfg().autoConsumeBuffs or cfg().questConsumePotions == false or buffConsumablesInstanceBlocked() then
-		return
-	end
-	if not PotionCmds or not InventoryCmds then
-		return
-	end
-	local now = tick()
-	if now - lastPotionConsumeTick < (cfg().questConsumePotionsInterval or 1.35) then
-		return
-	end
-	if cfg().questConsumePotionsOnlyWhenNoneActive and countActivePotionEntries() > 0 then
-		return
-	end
-	local cont = nil
-	pcall(function()
-		cont = InventoryCmds.Container()
-	end)
-	if not cont then
-		return
-	end
+function AR.Cons.getPotionItemClass()
 	local PotionItem = nil
 	pcall(function()
-		PotionItem = require(ReplicatedStorage.Library.Items:WaitForChild("PotionItem"))
-	end)
-	if not PotionItem then
-		return
-	end
-	local s = Save and Save.Get and Save.Get()
-	if not s or not s.Inventory or not s.Inventory.Potion then
-		return
-	end
-
-	local useTierSort = cfg().questConsumePotionsPreferMaxTier ~= false
-
-	local function consumePotionCand(c)
-		lastPotionConsumeTick = now
-		pcall(function()
-			PotionCmds.Consume(c.uid, c.n)
-		end)
-		log("Potions: Consume", c.uid, c.pid, c.n, "tier", c.tier)
-	end
-
-	if not useTierSort then
-		for uid, data in pairs(s.Inventory.Potion) do
-			local pid = data and data.id
-			if type(uid) == "string" and type(pid) == "string" then
-				if not potionTypeAlreadyActive(pid) then
-					local item = cont:Get(uid, PotionItem)
-					if item then
-						local tier = nil
-						pcall(function()
-							tier = item.GetTier and item:GetTier()
-						end)
-						tier = tier or data.tn or 1
-						local tierOk = true
-						if MasteryCmds and MasteryCmds.CanUsePotion then
-							pcall(function()
-								tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
-							end)
-						end
-						if tierOk then
-							local n = pickPotionConsumeAmount(item)
-							if n >= 1 then
-								consumePotionCand({ uid = uid, pid = pid, tier = tier, n = n })
-								return
-							end
-						end
-					end
-				end
-			end
+		local ms = ReplicatedStorage.Library.Items:FindFirstChild("PotionItem")
+		if ms then
+			PotionItem = cacheReq(ms)
 		end
-		return
-	end
+	end)
+	return PotionItem
+end
 
+function AR.Cons.canUsePotionTier(tier)
+	local tierOk = true
+	if MasteryCmds and MasteryCmds.CanUsePotion then
+		pcall(function()
+			tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
+		end)
+	end
+	return tierOk
+end
+
+function AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, requiredTier)
+	local pid = data and data.id
+	if type(uid) ~= "string" or type(pid) ~= "string" then
+		return nil
+	end
+	local bypassActiveBuff = type(requiredTier) == "number" and cfg().questConsumeBypassActiveBuffForTierForced ~= false
+	if not bypassActiveBuff and ARQ.potionTypeAlreadyActive(pid) then
+		return nil
+	end
+	local item = cont:Get(uid, PotionItem)
+	if not item then
+		return nil
+	end
+	local tier = nil
+	pcall(function()
+		tier = item.GetTier and item:GetTier()
+	end)
+	tier = tonumber(tier) or tonumber(data and data.tn) or 1
+	if type(requiredTier) == "number" and requiredTier >= 1 and tier ~= requiredTier then
+		return nil
+	end
+	if not AR.Cons.canUsePotionTier(tier) then
+		return nil
+	end
+	local n = ARQ.pickPotionConsumeAmount(item)
+	if n < 1 then
+		return nil
+	end
+	return { uid = uid, pid = pid, tier = tier, n = n }
+end
+
+function AR.Cons.consumePotionCand(now, c)
+	Ticks.lastPotionConsumeTick = now
+	pcall(function()
+		PotionCmds.Consume(c.uid, c.n)
+	end)
+	log("Potions: Consume", c.uid, c.pid, c.n, "tier", c.tier)
+end
+
+function AR.Cons.consumeFirstPotionCandidate(now, inventory, cont, PotionItem, requiredTier)
+	for uid, data in pairs(inventory) do
+		local c = AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, requiredTier)
+		if c then
+			AR.Cons.consumePotionCand(now, c)
+			return true
+		end
+	end
+	return false
+end
+
+function AR.Cons.consumeBestPotionCandidate(now, inventory, cont, PotionItem, requiredTier)
 	local candidates = {}
-	for uid, data in pairs(s.Inventory.Potion) do
-		local pid = data and data.id
-		if type(uid) == "string" and type(pid) == "string" and not potionTypeAlreadyActive(pid) then
-			local item = cont:Get(uid, PotionItem)
-			if item then
-				local tier = nil
-				pcall(function()
-					tier = item.GetTier and item:GetTier()
-				end)
-				tier = tonumber(tier) or tonumber(data and data.tn) or 1
-				local tierOk = true
-				if MasteryCmds and MasteryCmds.CanUsePotion then
-					pcall(function()
-						tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
-					end)
-				end
-				if tierOk then
-					local n = pickPotionConsumeAmount(item)
-					if n >= 1 then
-						table.insert(candidates, { uid = uid, pid = pid, tier = tier, n = n })
-					end
-				end
-			end
+	for uid, data in pairs(inventory) do
+		local c = AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, requiredTier)
+		if c then
+			table.insert(candidates, c)
 		end
 	end
 	if #candidates == 0 then
-		return
+		return false
 	end
 	table.sort(candidates, function(a, b)
 		if a.tier ~= b.tier then
@@ -3040,18 +4793,77 @@ local function tryQuestConsumePotion()
 		end
 		return tostring(a.uid) < tostring(b.uid)
 	end)
-	consumePotionCand(candidates[1])
+	AR.Cons.consumePotionCand(now, candidates[1])
+	return true
 end
 
-local function tryQuestConsumeFruit()
-	if not cfg().autoConsumeBuffs or cfg().questConsumeFruits == false or buffConsumablesInstanceBlocked() then
+function AR.Cons.tryQuestConsumePotionLegacy()
+	if not cfg().autoConsumeBuffs or cfg().questConsumePotions == false or ARQ.buffConsumablesInstanceBlocked() then
+		return
+	end
+	if not PotionCmds or not InventoryCmds then
+		return
+	end
+	local now = tick()
+	if now - Ticks.lastPotionConsumeTick < (cfg().questConsumePotionsInterval or 1.35) then
+		return
+	end
+	local reqTier = QuestAssist.resolvePotionQuestTargetTier(cachedTrackedObjective)
+	if cfg().questConsumePotionsOnlyWhenNoneActive and ARQ.countActivePotionEntries() > 0 then
+		if type(reqTier) ~= "number" or cfg().questConsumeIgnoreOnlyWhenNoneWhenTierForced == false then
+			return
+		end
+	end
+	local cont = nil
+	pcall(function()
+		cont = InventoryCmds.Container()
+	end)
+	if not cont then
+		return
+	end
+	local PotionItem = AR.Cons.getPotionItemClass()
+	if not PotionItem then
+		return
+	end
+	local s = Save and Save.Get and Save.Get()
+	if not s or not s.Inventory or not s.Inventory.Potion then
+		return
+	end
+
+	local inventory = s.Inventory.Potion
+	if type(reqTier) == "number" then
+		if cfg().verboseLog or cfg().log then
+			traceThrottled(
+				"potion_quest_target_tier",
+				8,
+				"quest",
+				"potion tier",
+				reqTier,
+				QuestAssist.potionTierRequiredByObjective(cachedTrackedObjective) and "tracked" or "scraped_gui"
+			)
+		end
+		local okPick = AR.Cons.consumeBestPotionCandidate(now, inventory, cont, PotionItem, reqTier)
+		if not okPick then
+			traceThrottled("potion_quest_tier_no_match", 10, "quest", "нет зелья тира", reqTier, "- инвентарь или уже активный баф")
+		end
+		return
+	end
+	if cfg().questConsumePotionsPreferMaxTier == false then
+		AR.Cons.consumeFirstPotionCandidate(now, inventory, cont, PotionItem)
+		return
+	end
+	AR.Cons.consumeBestPotionCandidate(now, inventory, cont, PotionItem)
+end
+
+function AR.Cons.tryQuestConsumeFruitLegacy()
+	if not cfg().autoConsumeBuffs or cfg().questConsumeFruits == false or ARQ.buffConsumablesInstanceBlocked() then
 		return
 	end
 	if not FruitCmds or not InventoryCmds then
 		return
 	end
 	local now = tick()
-	if now - lastFruitConsumeTick < (cfg().questConsumeFruitsInterval or 1.5) then
+	if now - Ticks.lastFruitConsumeTick < (cfg().questConsumeFruitsInterval or 1.5) then
 		return
 	end
 	local s = Save and Save.Get and Save.Get()
@@ -3068,7 +4880,7 @@ local function tryQuestConsumeFruit()
 			if maxC >= 1 then
 				local cap = tonumber(cfg().questConsumeFruitMaxAtOnce) or 4
 				local take = math.min(maxC, math.max(1, cap))
-				lastFruitConsumeTick = now
+				Ticks.lastFruitConsumeTick = now
 				pcall(function()
 					FruitCmds.Consume(uid, take)
 				end)
@@ -3079,20 +4891,23 @@ local function tryQuestConsumeFruit()
 	end
 end
 
-local function tryAutoConsumeConsumables()
-	if not cfg().autoConsumeBuffs or cfg().autoConsumeConsumables == false or buffConsumablesInstanceBlocked() then
+function AR.Cons.tryAutoConsumeConsumablesLegacy()
+	if not cfg().autoConsumeBuffs or cfg().autoConsumeConsumables == false or ARQ.buffConsumablesInstanceBlocked() then
 		return
 	end
 	if not ConsumableCmds or not InventoryCmds or type(ConsumableCmds.Consume) ~= "function" then
 		return
 	end
 	local now = tick()
-	if now - lastConsumableConsumeTick < (cfg().autoConsumeConsumablesInterval or 2.2) then
+	if now - Ticks.lastConsumableConsumeTick < (cfg().autoConsumeConsumablesInterval or 2.2) then
 		return
 	end
 	local ConsumableItem = nil
 	pcall(function()
-		ConsumableItem = require(ReplicatedStorage.Library.Items:WaitForChild("ConsumableItem"))
+		local ms = ReplicatedStorage.Library.Items:FindFirstChild("ConsumableItem")
+		if ms then
+			ConsumableItem = cacheReq(ms)
+		end
 	end)
 	if not ConsumableItem then
 		return
@@ -3111,10 +4926,10 @@ local function tryAutoConsumeConsumables()
 
 	for uid, data in pairs(s.Inventory.Consumable) do
 		local cid = data and data.id
-		if type(uid) == "string" and type(cid) == "string" and not idInConsumableBlocklist(cid) then
+		if type(uid) == "string" and type(cid) == "string" and not ARQ.idInConsumableBlocklist(cid) then
 			local item = cont:Get(uid, ConsumableItem)
 			if item and item.GetAmount and item:GetAmount() > 0 then
-				lastConsumableConsumeTick = now
+				Ticks.lastConsumableConsumeTick = now
 				local okR = false
 				local err = nil
 				pcall(function()
@@ -3127,396 +4942,369 @@ local function tryAutoConsumeConsumables()
 	end
 end
 
---- Пульс зелий / фруктов / ConsumableItem (см. Studio PotionCmds, FruitCmds, ConsumableCmds).
-local function tryAutoBuffConsumablesPulse()
+function AR.Cons.tryAutoBuffConsumablesPulseLegacy()
 	pcall(function()
-		tryQuestConsumePotion()
-		tryQuestConsumeFruit()
-		tryAutoConsumeConsumables()
+		ARG.refreshTrackedObjective()
+	end)
+	pcall(function()
+		AR.Cons.tryQuestConsumePotionLegacy()
+		AR.Cons.tryQuestConsumeFruitLegacy()
+		AR.Cons.tryAutoConsumeConsumablesLegacy()
 	end)
 end
 
---- Справочник флагов: НЕ через `require(Library.Directory).ZoneFlags` — у Directory LazyModuleLoader
---- и ключ `ZoneFlags` часто отсутствует (ошибка «Unknown entry \'ZoneFlags\'»). Как в FlexibleFlagCmds — прямой require модуля.
-local zoneFlagsDirectoryCache = nil
-local zoneFlagsDirectoryCachedBad = false
-local function getZoneFlagsDirectoryTable()
-	if zoneFlagsDirectoryCachedBad then
+AR.QuestWorldHelpers = AR.QuestWorldHelpers or {}
+do
+	-- PS99 egg stands / props use names like "Center", "Pad"; Directory.Zones.__index errors on unknown keys.
+	local ZONE_FALSE_POSITIVE_NAMES = {
+		Center = true,
+		Pad = true,
+		Capsule = true,
+		Egg = true,
+		Root = true,
+		Hitbox = true,
+		HitBox = true,
+		Prompt = true,
+		ProximityPrompt = true,
+		Attachment = true,
+		Handle = true,
+		Mesh = true,
+		Union = true,
+		Collider = true,
+		Model = true,
+		Base = true,
+		Primary = true,
+		["Egg Capsule"] = true,
+		Main = true,
+	}
+
+	local function zoneNameLooksLikeAuxiliaryPart(name)
+		return type(name) == "string" and ZONE_FALSE_POSITIVE_NAMES[name] == true
+	end
+
+	function AR.QuestWorldHelpers.getZoneFlagsDirectoryTable()
+		local b = lazyDirCaches.ZoneFlags
+		if b.bad then
+			return nil
+		end
+		if b.cache ~= nil then
+			return b.cache
+		end
+		local zf = ReplicatedStorage.Library.Directory:FindFirstChild("ZoneFlags")
+		local tbl = zf and cacheReq(zf) or nil
+		if type(tbl) == "table" then
+			b.cache = tbl
+			return tbl
+		end
+		b.bad = true
 		return nil
 	end
-	if zoneFlagsDirectoryCache ~= nil then
-		return zoneFlagsDirectoryCache
-	end
-	local ok, tbl = pcall(function()
-		return require(ReplicatedStorage.Library.Directory:WaitForChild("ZoneFlags"))
-	end)
-	if ok and type(tbl) == "table" then
-		zoneFlagsDirectoryCache = tbl
-		return tbl
-	end
-	zoneFlagsDirectoryCachedBad = true
-	return nil
-end
 
---- Квест use/place flag: клиент MapCmds.IsInDottedBox + Network.Invoke через FlexibleFlagCmds.Consume (игра).
---- Без tracked (no_goal из GoalGenerators) — см. cfg().questAutoPlaceFlagWithoutTrackedGoal.
-local function tryQuestPlaceFlexibleFlag(tracked)
-	if not cfg().questAutoPlaceFlag then
-		return
-	end
-	if tracked ~= nil then
-		if QuestAssist.shouldSkipObjectiveInteraction(tracked) then
-			return
+	function AR.QuestWorldHelpers.normalizeZoneIdCandidate(z)
+		if type(z) ~= "string" or z == "" then
+			return nil
 		end
-		local blobTracked = QuestAssist.objectiveTextLower(tracked)
-		if not string.find(blobTracked, "flag", 1, true) then
-			return
+		z = string.gsub(z, "^%s*(.-)%s*$", "%1")
+		if z == "" then
+			return nil
 		end
-	elseif cfg().questAutoPlaceFlagWithoutTrackedGoal ~= false then
-		-- ставим по dotted box без текста цели от GoalCmds
-	else
-		return
-	end
-	if not FlexibleFlagCmds or not MapCmds or not InventoryCmds then
-		return
-	end
-	local inBox = false
-	pcall(function()
-		inBox = MapCmds.IsInDottedBox and MapCmds.IsInDottedBox() == true
-	end)
-	if not inBox then
-		return
-	end
-	local now = tick()
-	if now - lastQuestFlagTick < (cfg().questPlaceFlagInterval or 2) then
-		return
-	end
-
-	local blobHint = ""
-	if tracked ~= nil then
-		blobHint = QuestAssist.objectiveTextLower(tracked)
-	end
-
-	local function orderedFlagNames()
-		local out = {}
-		local seen = {}
-		local hints = {
-			{ "strength", "Strength Flag" },
-			{ "magnet", "Magnet Flag" },
-			{ "hasty", "Hasty Flag" },
-			{ "shiny", "Shiny Flag" },
-			{ "rainbow", "Rainbow Flag" },
-		}
-		for _, h in ipairs(hints) do
-			if string.find(blobHint, h[1], 1, true) and not seen[h[2]] then
-				table.insert(out, h[2])
-				seen[h[2]] = true
-			end
-		end
-		local fb = cfg().questFlagNameFallbackOrder
-		if type(fb) == "table" then
-			for _, n in ipairs(fb) do
-				if type(n) == "string" and not seen[n] then
-					table.insert(out, n)
-					seen[n] = true
-				end
-			end
-		end
-		return out
-	end
-
-	local cont = nil
-	pcall(function()
-		cont = InventoryCmds.Container and InventoryCmds.Container()
-	end)
-	if not cont or type(cont.CollectAny) ~= "function" then
-		return
-	end
-
-	local zoneDir = getZoneFlagsDirectoryTable()
-	if not zoneDir then
-		return
-	end
-
-	for _, flagNm in ipairs(orderedFlagNames()) do
-		local dirEntry = zoneDir[flagNm]
-		if dirEntry then
-			local items = nil
-			pcall(function()
-				items = cont:CollectAny(dirEntry)
+		local zones = Directory and type(Directory.Zones) == "table" and Directory.Zones or nil
+		if zones then
+			local okDirect, direct = pcall(function()
+				return zones[z]
 			end)
-			if items and #items > 0 then
-				local it = items[1]
-				local uid = nil
-				pcall(function()
-					if type(it.GetUID) == "function" then
-						uid = it:GetUID()
-					end
-				end)
-				if type(uid) == "string" and uid ~= "" then
-					lastQuestFlagTick = now
-					local ok, res = pcall(function()
-						return FlexibleFlagCmds.Consume(flagNm, uid)
-					end)
-					log("quest FlexibleFlagCmds.Consume", flagNm, ok, res)
-					return
+			if okDirect and direct then
+				return z
+			end
+			for id, row in pairs(zones) do
+				if id == z then
+					return id
+				end
+				if type(row) == "table" and (row._id == z or row.ZoneName == z or row.Name == z or row.DisplayName == z) then
+					return id
 				end
 			end
+			return nil
 		end
-	end
-end
-
-local function objectiveHasWorldTarget(tracked)
-	if not tracked then
-		return false
-	end
-	--- Travel To Tech: при дистанции >500 в Displays нет Target (см. Studio), но цель всё равно мировая.
-	if isTravelToTechGeneratorName(tracked._generatorName) then
-		return true
-	end
-	if type(tracked.Displays) ~= "table" then
-		return false
-	end
-	for _, disp in ipairs(tracked.Displays) do
-		local t = disp and disp.Target
-		if typeof(t) == "Instance" then
-			if t:IsA("ProximityPrompt") then
-				return true
-			end
-			if t:IsA("BasePart") then
-				return true
-			end
-			if t:IsA("Model") and t.PrimaryPart then
-				return true
-			end
+		if zoneNameLooksLikeAuxiliaryPart(z) then
+			return nil
 		end
-	end
-	return false
-end
-
-local function getZoneIdAtWorldPosition(pos)
-	if not pos then
-		return nil
-	end
-	local z = nil
-	pcall(function()
-		if MapCmds and MapCmds.GetZoneAtPosition then
-			z = MapCmds.GetZoneAtPosition(pos)
-		elseif MapCmds and MapCmds.GetZoneFromPosition then
-			z = MapCmds.GetZoneFromPosition(pos)
-		elseif ZoneCmds and ZoneCmds.GetZoneAtPosition then
-			z = ZoneCmds.GetZoneAtPosition(pos)
-		elseif ZoneCmds and ZoneCmds.GetZoneFromWorldPosition then
-			z = ZoneCmds.GetZoneFromWorldPosition(pos)
-		end
-	end)
-	if type(z) == "string" and z ~= "" then
 		return z
 	end
-	return nil
-end
 
-local function getEggZoneIdForNumber(n)
-	if not EggsUtil then
-		return nil
-	end
-	local part = nil
-	pcall(function()
-		part = EggsUtil.GetEggPart(n)
-	end)
-	if not part then
-		return nil
-	end
-	return getZoneIdAtWorldPosition(part.Position)
-end
-
---- Если в тексте цели явно фигурирует имя яйца — вернуть его номер (для телепорта на другую зону).
-local function questSpecifiesEggNumber(tracked)
-	if not tracked or not EggsUtil or not EggCmds then
-		return nil
-	end
-	local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
-	if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
-		return nil
-	end
-	local hi = 0
-	pcall(function()
-		hi = EggCmds.GetHighestEggNumberAvailable() or 0
-	end)
-	if hi <= 0 then
-		return nil
-	end
-	for i = hi, 1, -1 do
-		local ed = EggsUtil.GetByNumber(i)
-		if ed and ed._id then
-			local idl = string.lower(tostring(ed._id))
-			if string.find(blob, idl, 1, true) then
-				return i
+	function AR.QuestWorldHelpers.getZoneIdFromInstance(inst)
+		if typeof(inst) ~= "Instance" then
+			return nil
+		end
+		local attrNames = { "ParentID", "ParentId", "ZoneID", "ZoneId", "zoneId", "Zone", "AreaId" }
+		local at = inst
+		for _ = 1, 16 do
+			if not at then
+				break
 			end
-			local bare = string.gsub(idl, " egg", "", 1)
-			if #bare >= 4 and bare ~= idl and string.find(blob, bare, 1, true) then
-				return i
+			for _, attr in ipairs(attrNames) do
+				local ok, v = pcall(function()
+					return at:GetAttribute(attr)
+				end)
+				local z = ok and AR.QuestWorldHelpers.normalizeZoneIdCandidate(v) or nil
+				if z then
+					return z
+				end
 			end
+			if not zoneNameLooksLikeAuxiliaryPart(at.Name) then
+				local byName = AR.QuestWorldHelpers.normalizeZoneIdCandidate(at.Name)
+				if byName then
+					return byName
+				end
+			end
+			at = at.Parent
 		end
+		return nil
 	end
-	return nil
-end
 
-local HatchAssist = {}
-
-function HatchAssist.infinityAllowed(tracked)
-	if cfg().allowInfinityEggWithoutQuest then
-		return true
-	end
-	local blob = string.lower(
-		QuestAssist.flattenObjectiveText(tracked) .. " " .. tostring(tracked and tracked._generatorName or "")
-	)
-	for _, kw in ipairs(cfg().infinityEggQuestKeywords or {}) do
-		if type(kw) == "string" and kw ~= "" and string.find(blob, string.lower(kw), 1, true) then
-			return true
+	function AR.QuestWorldHelpers.getZoneIdAtWorldPosition(pos)
+		if not pos then
+			return nil
 		end
+		local z = nil
+		pcall(function()
+			if MapCmds and MapCmds.GetZoneAtPosition then
+				z = MapCmds.GetZoneAtPosition(pos)
+			elseif MapCmds and MapCmds.GetZoneFromPosition then
+				z = MapCmds.GetZoneFromPosition(pos)
+			elseif ZoneCmds and ZoneCmds.GetZoneAtPosition then
+				z = ZoneCmds.GetZoneAtPosition(pos)
+			elseif ZoneCmds and ZoneCmds.GetZoneFromWorldPosition then
+				z = ZoneCmds.GetZoneFromWorldPosition(pos)
+			end
+		end)
+		return AR.QuestWorldHelpers.normalizeZoneIdCandidate(z)
 	end
-	return false
-end
 
-function HatchAssist.pickEggNumber(tracked)
-	if not EggsUtil or not EggCmds then
-		return 0
-	end
-	local hi = 0
-	pcall(function()
-		hi = EggCmds.GetHighestEggNumberAvailable() or 0
-	end)
-	if hi <= 0 then
-		return 0
-	end
-	if HatchAssist.infinityAllowed(tracked) then
-		return hi
-	end
-	while hi > 0 do
-		local dir = EggsUtil.GetByNumber(hi)
-		if dir and dir._id and dir._id ~= "Infinity Egg" then
-			return hi
+	function AR.QuestWorldHelpers.getEggZoneIdForNumber(n)
+		if not EggsUtil then
+			return nil
 		end
-		hi -= 1
+		local part = nil
+		pcall(function()
+			part = EggsUtil.GetEggPart(n)
+		end)
+		if not part then
+			return nil
+		end
+		return AR.QuestWorldHelpers.getZoneIdFromInstance(part) or AR.QuestWorldHelpers.getZoneIdAtWorldPosition(part.Position)
 	end
-	return 0
-end
 
---- Наивысший доступный номер яйца, чей мировой стенд в зоне zoneId (по позиции GetEggPart).
-function HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
-	if not zoneId or not EggsUtil or not EggCmds then
-		return 0
-	end
-	local hi = 0
-	pcall(function()
-		hi = EggCmds.GetHighestEggNumberAvailable() or 0
-	end)
-	if hi <= 0 then
-		return 0
-	end
-	local allowInf = HatchAssist.infinityAllowed(tracked)
-	for i = hi, 1, -1 do
-		local dir = EggsUtil.GetByNumber(i)
-		if dir and dir._id then
-			if not (dir._id == "Infinity Egg" and not allowInf) then
-				local ez = getEggZoneIdForNumber(i)
-				if ez and ez == zoneId then
+	function AR.QuestWorldHelpers.questSpecifiesEggNumber(tracked)
+		if not tracked or not EggsUtil or not EggCmds then
+			return nil
+		end
+		local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
+		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
+			return nil
+		end
+		local hi = 0
+		pcall(function()
+			hi = EggCmds.GetHighestEggNumberAvailable() or 0
+		end)
+		if hi <= 0 then
+			return nil
+		end
+		for i = hi, 1, -1 do
+			local ed = nil
+			pcall(function()
+				ed = EggsUtil.GetByNumber(i)
+			end)
+			if ed and ed._id then
+				local idl = string.lower(tostring(ed._id))
+				if string.find(blob, idl, 1, true) then
+					return i
+				end
+				local bare = string.gsub(idl, " egg", "", 1)
+				if #bare >= 4 and bare ~= idl and string.find(blob, bare, 1, true) then
 					return i
 				end
 			end
 		end
+		return nil
 	end
-	return 0
-end
 
---- Яйцо из текста квеста; иначе приоритет яйца текущей локации; иначе прежняя логика.
-function HatchAssist.pickEggNumberForHatch(tracked)
-	local explicit = questSpecifiesEggNumber(tracked)
-	if explicit and explicit > 0 then
-		return explicit, true
+	function AR.QuestWorldHelpers.saveInventoryHasAnyShovel(s)
+		if not s or type(s.Inventory) ~= "table" or type(s.Inventory.Misc) ~= "table" then
+			return false
+		end
+		for _, data in pairs(s.Inventory.Misc) do
+			if type(data) == "table" and type(data.id) == "string" then
+				if string.find(string.lower(data.id), "shovel", 1, true) then
+					return true
+				end
+			end
+		end
+		return false
 	end
-	if cfg().preferZoneEggWhenProgress and MapCmds then
-		local cur = MapCmds.GetCurrentZone()
-		if cur then
-			local zn = HatchAssist.pickHighestEggInPhysicalZone(cur, tracked)
-			if zn > 0 then
-				return zn, false
+
+	function AR.QuestWorldHelpers.saveInventoryHasUsableShovelForAdvancedDigsite(s)
+		if not s or type(s.Inventory) ~= "table" or type(s.Inventory.Misc) ~= "table" then
+			return false
+		end
+		local badFlimsy = cfg().questAdvancedDigsiteFlimsyShovelIsInsufficient ~= false
+		for _, data in pairs(s.Inventory.Misc) do
+			if type(data) == "table" and type(data.id) == "string" then
+				local idl = string.lower(data.id)
+				if string.find(idl, "shovel", 1, true) then
+					if not (badFlimsy and string.find(idl, "flimsy", 1, true)) then
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	function AR.QuestWorldHelpers.objectiveHasWorldTarget(tracked)
+		if not tracked then
+			return false
+		end
+		if ARQ.isTravelToTechGeneratorName(tracked._generatorName) then
+			return true
+		end
+		if type(tracked.Displays) ~= "table" then
+			return false
+		end
+		for _, disp in ipairs(tracked.Displays) do
+			local t = disp and disp.Target
+			if typeof(t) == "Instance" then
+				if t:IsA("ProximityPrompt") then
+					return true
+				end
+				if t:IsA("BasePart") then
+					return true
+				end
+				if t:IsA("Model") and t.PrimaryPart then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	function AR.QuestWorldHelpers.tryQuestPlaceFlexibleFlag(tracked)
+		if not cfg().questAutoPlaceFlag then
+			return
+		end
+		if tracked ~= nil then
+			if QuestAssist.shouldSkipObjectiveInteraction(tracked) then
+				return
+			end
+			local blobTracked = QuestAssist.objectiveTextLower(tracked)
+			if not string.find(blobTracked, "flag", 1, true) then
+				return
+			end
+		elseif cfg().questAutoPlaceFlagWithoutTrackedGoal ~= false then
+		else
+			return
+		end
+		if not FlexibleFlagCmds or not MapCmds or not InventoryCmds then
+			return
+		end
+		if not safeInDottedBox() then
+			return
+		end
+		local now = tick()
+		if now - Ticks.lastQuestFlagTick < (cfg().questPlaceFlagInterval or 2) then
+			return
+		end
+
+		local blobHint = ""
+		if tracked ~= nil then
+			blobHint = QuestAssist.objectiveTextLower(tracked)
+		end
+
+		local function orderedFlagNames()
+			local out = {}
+			local seen = {}
+			local hints = {
+				{ "strength", "Strength Flag" },
+				{ "magnet", "Magnet Flag" },
+				{ "hasty", "Hasty Flag" },
+				{ "shiny", "Shiny Flag" },
+				{ "rainbow", "Rainbow Flag" },
+			}
+			for _, h in ipairs(hints) do
+				if string.find(blobHint, h[1], 1, true) and not seen[h[2]] then
+					table.insert(out, h[2])
+					seen[h[2]] = true
+				end
+			end
+			local fb = cfg().questFlagNameFallbackOrder
+			if type(fb) == "table" then
+				for _, n in ipairs(fb) do
+					if type(n) == "string" and not seen[n] then
+						table.insert(out, n)
+						seen[n] = true
+					end
+				end
+			end
+			return out
+		end
+
+		local cont = nil
+		pcall(function()
+			cont = InventoryCmds.Container and InventoryCmds.Container()
+		end)
+		if not cont or type(cont.CollectAny) ~= "function" then
+			return
+		end
+
+		local zoneDir = AR.QuestWorldHelpers.getZoneFlagsDirectoryTable()
+		if not zoneDir then
+			return
+		end
+
+		for _, flagNm in ipairs(orderedFlagNames()) do
+			local dirEntry = zoneDir[flagNm]
+			if dirEntry then
+				local items = nil
+				pcall(function()
+					items = cont:CollectAny(dirEntry)
+				end)
+				if items and #items > 0 then
+					local it = items[1]
+					local uid = nil
+					pcall(function()
+						if type(it.GetUID) == "function" then
+							uid = it:GetUID()
+						end
+					end)
+					if type(uid) == "string" and uid ~= "" then
+						Ticks.lastQuestFlagTick = now
+						local ok, res = pcall(function()
+							return FlexibleFlagCmds.Consume(flagNm, uid)
+						end)
+						log("quest FlexibleFlagCmds.Consume", flagNm, ok, res)
+						return
+					end
+				end
 			end
 		end
 	end
-	return HatchAssist.pickEggNumber(tracked), false
 end
-
-function HatchAssist.pivotForEgg(eggDir, tracked)
-	if not eggDir or not cfg().pivotBeforeRemotePurchases or not cfg().hatchTeleportNearEgg then
-		return
-	end
-	if eggDir._id == "Infinity Egg" then
-		if HatchAssist.infinityAllowed(tracked) then
-			pivotNearestInfinityEggStand()
-		end
-		return
-	end
-	local uid = nil
-	if CustomEggsCmds and eggDir._id then
-		pcall(function()
-			uid = CustomEggsCmds.GetClosestById(eggDir._id)
-		end)
-	end
-	
-	local yOff = cfg().hatchEggPivotYOffset or 8
-	local ch = LocalPlayer.Character
-	
-	if uid then
-		local row = nil
-		pcall(function()
-			row = CustomEggsCmds.Get(uid)
-		end)
-		if row and row._model and ch then
-			pcall(function()
-				ch:PivotTo(row._model:GetPivot() * CFrame.new(0, yOff, 0))
-			end)
-			stabilizeCharacterPhysics(ch)
-		end
-		return
-	end
-	
-	if eggDir.eggNumber and EggsUtil and EggsUtil.GetEggPart then
-		local part = nil
-		pcall(function()
-			part = EggsUtil.GetEggPart(eggDir.eggNumber)
-		end)
-		if part and ch then
-			pcall(function()
-				ch:PivotTo(part.CFrame * CFrame.new(0, yOff, 0))
-			end)
-			stabilizeCharacterPhysics(ch)
-			log("Pivot to physical egg", eggDir.eggNumber)
-		else
-			log("Failed to find physical egg part for", eggDir.eggNumber)
-		end
-	end
-end
-
-local zonesIdMatch, playerNearZoneTeleportPoint
 do
-	local function normZoneId(z)
+	function AR.normZoneId(z)
 		if type(z) ~= "string" then
 			return nil
 		end
 		return (string.gsub(z, "^%s*(.-)%s*$", "%1"))
 	end
-	zonesIdMatch = function(a, b)
-		local na = normZoneId(a)
-		local nb = normZoneId(b)
+	AR.zonesIdMatch = function(a, b)
+		local na = AR.normZoneId(a)
+		local nb = AR.normZoneId(b)
 		if not na or not nb then
 			return false
 		end
 		return na == nb
 	end
-	--- HRP рядом с клиентской точкой PERSISTENT/Teleport для зоны (без серверного Teleports_RequestTeleport).
-	playerNearZoneTeleportPoint = function(zoneId, maxDist)
+	AR.playerNearZoneTeleportPoint = function(zoneId, maxDist)
 		if not ZonesUtil or type(zoneId) ~= "string" then
 			return false
 		end
@@ -3537,9 +5325,9 @@ do
 	end
 end
 
-local Teleports = {}
+AR.Teleports = AR.Teleports or {}
 
-function Teleports.schedulePivotRepeats(maxId)
+function AR.Teleports.schedulePivotRepeats(maxId)
 	if not ZonesUtil then
 		return
 	end
@@ -3582,65 +5370,607 @@ function Teleports.schedulePivotRepeats(maxId)
 	end)
 end
 
-local function tryQuestEggHatchAssist(tracked, opts)
+AR.ARC = (function()
+	local badEggDirNumbers = {}
+
+	local function safeEggByNumber(n)
+		if badEggDirNumbers[n] then
+			return nil
+		end
+		local dir = nil
+		local ok, err = pcall(function()
+			dir = EggsUtil.GetByNumber(n)
+		end)
+		if not ok then
+			badEggDirNumbers[n] = true
+			traceThrottled("egg_dir_bad_" .. tostring(n), 30, "hatch", "skip egg", n, err)
+			return nil
+		end
+		return dir
+	end
+
+	local function eggZoneIdsEqual(zoneA, zoneB)
+		if not zoneA or not zoneB then
+			return false
+		end
+		if zoneA == zoneB then
+			return true
+		end
+		local a = string.gsub(zoneA, "^%s*(.-)%s*$", "%1")
+		local b = string.gsub(zoneB, "^%s*(.-)%s*$", "%1")
+		return a == b
+	end
+
+	local function eggHatchUnitPriceAndCurrency(eggDir)
+		if not eggDir then
+			return nil, nil
+		end
+		local cid = eggDir.Currency or eggDir.CurrencyId or eggDir.CurrencyID or eggDir.currency
+		local unit = eggDir.Cost or eggDir.Price or eggDir.CurrencyCost or eggDir.OpenPrice or eggDir.HatchCost
+		if type(cid) == "string" and type(unit) == "number" and unit > 0 then
+			return cid, unit
+		end
+		if type(unit) == "number" and unit > 0 and type(cid) ~= "string" then
+			pcall(function()
+				if Directory and Directory.Eggs and eggDir._id then
+					local row = Directory.Eggs[eggDir._id]
+					if row then
+						cid = row.Currency or row.CurrencyId or cid
+					end
+				end
+			end)
+			if type(cid) == "string" then
+				return cid, unit
+			end
+		end
+		pcall(function()
+			if EggCmds and eggDir._id and type(EggCmds.GetCost) == "function" then
+				local c, u = EggCmds.GetCost(eggDir._id, 1)
+				if type(u) == "number" and u > 0 then
+					cid, unit = c or cid, u
+				end
+			end
+			if (not unit or unit <= 0) and EggCmds and type(EggCmds.GetEggCost) == "function" then
+				local u = EggCmds.GetEggCost(eggDir)
+				if type(u) == "number" and u > 0 then
+					unit = u
+				end
+			end
+			if (not unit or unit <= 0) and EggCmds and type(EggCmds.GetPrice) == "function" then
+				local u = EggCmds.GetPrice(eggDir)
+				if type(u) == "number" and u > 0 then
+					unit = u
+				end
+			end
+			if (not unit or unit <= 0) and Balancing and type(Balancing.CalcEggOpenPrice) == "function" then
+				local u = Balancing.CalcEggOpenPrice(eggDir)
+				if type(u) == "number" and u > 0 then
+					unit = u
+				end
+			end
+			if (not unit or unit <= 0) and Balancing and type(Balancing.CalcEggPrice) == "function" then
+				local u = Balancing.CalcEggPrice(eggDir, 1)
+				if type(u) == "number" and u > 0 then
+					unit = u
+				end
+			end
+		end)
+		if type(cid) == "string" and type(unit) == "number" and unit > 0 then
+			return cid, unit
+		end
+		return nil, nil
+	end
+
+	local function eggMaxAffordableHatchCount(eggDir, maxWanted)
+		maxWanted = math.clamp(maxWanted or 12, 1, 12)
+		if cfg().hatchClampToAffordableAmount == false then
+			return maxWanted
+		end
+		if not CurrencyCmds or not eggDir then
+			return maxWanted
+		end
+		local cid, unit = eggHatchUnitPriceAndCurrency(eggDir)
+		if not cid or not unit or unit <= 0 then
+			if cfg().hatchClampToAffordableAmount ~= false then
+				return 1
+			end
+			return maxWanted
+		end
+		local bal = 0
+		pcall(function()
+			bal = CurrencyCmds.Get(cid) or 0
+		end)
+		return math.clamp(math.floor(bal / unit), 0, maxWanted)
+	end
+
+	local function suppressHatchDirectoryZoneError(stage, err, now, progressOnly)
+		local es = tostring(err)
+		if not string.find(es, "Directory.Zones", 1, true) and not string.find(es, "Unknown Directory Zones", 1, true) then
+			return false
+		end
+		traceThrottled(
+			"quest_hatch_zone_dir_" .. tostring(stage),
+			30,
+			"hatch",
+			"skip hatch assist (Directory.Zones); progressOnly=",
+			progressOnly,
+			err
+		)
+		return true
+	end
+
+	local function nextZoneCurrencyReserveForEgg(eggDir, progressOnly, fromQuestText)
+		if progressOnly and cfg().hatchReserveSkipForProgressOnly ~= false then
+			return 0, nil
+		end
+		if cfg().hatchReserveCurrencyForNextZone ~= true or not progressOnly or fromQuestText then
+			return 0, nil
+		end
+		local cid = eggHatchUnitPriceAndCurrency(eggDir)
+		if type(cid) ~= "string" then
+			return 0, nil
+		end
+		local ignoreQuestCompletion = cfg().hatchReserveForNextZoneEvenWhenQuestIncomplete ~= false
+		local info = ARZone.getNextMainZonePurchaseInfo({ ignoreQuestCompletion = ignoreQuestCompletion })
+		if not info or info.currency ~= cid or type(info.price) ~= "number" or info.price <= 0 then
+			return 0, info
+		end
+		local mult = tonumber(cfg().hatchNextZoneReserveMultiplier) or 1
+		if mult < 1 then
+			mult = 1
+		end
+		return math.ceil(info.price * mult), info
+	end
+
+	local function shouldFilterEggByAfford(useGlobalList)
+		if useGlobalList then
+			return cfg().hatchPreferAffordableEggGlobally ~= false
+		end
+		return cfg().hatchPreferAffordableEggInZone ~= false
+	end
+
+	local function eggPassesAffordFilter(eggDir, useGlobalList)
+		if not shouldFilterEggByAfford(useGlobalList) then
+			return true
+		end
+		if not eggDir then
+			return false
+		end
+		if eggDir._id == "Infinity Egg" then
+			return true
+		end
+		local cid, unit = eggHatchUnitPriceAndCurrency(eggDir)
+		if not cid or not unit or unit <= 0 then
+			return true
+		end
+		return eggMaxAffordableHatchCount(eggDir, 1) >= 1
+	end
+
+	local HatchAssist = {}
+
+	function HatchAssist.infinityAllowed(tracked)
+		if cfg().allowInfinityEggWithoutQuest then
+			return true
+		end
+		local blob = string.lower(
+			QuestAssist.flattenObjectiveText(tracked) .. " " .. tostring(tracked and tracked._generatorName or "")
+		)
+		for _, kw in ipairs(cfg().infinityEggQuestKeywords or {}) do
+			if type(kw) == "string" and kw ~= "" and string.find(blob, string.lower(kw), 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	function HatchAssist.pickEggNumber(tracked)
+		if not EggsUtil or not EggCmds then
+			return 0
+		end
+		local hi = 0
+		pcall(function()
+			hi = EggCmds.GetHighestEggNumberAvailable() or 0
+		end)
+		if hi <= 0 then
+			return 0
+		end
+		if HatchAssist.infinityAllowed(tracked) then
+			local dirTop = safeEggByNumber(hi)
+			if dirTop and eggPassesAffordFilter(dirTop, true) then
+				return hi
+			end
+		end
+		while hi > 0 do
+			local dir = safeEggByNumber(hi)
+			if dir and dir._id and dir._id ~= "Infinity Egg" and eggPassesAffordFilter(dir, true) then
+				return hi
+			end
+			if dir and dir._id == "Infinity Egg" and HatchAssist.infinityAllowed(tracked) and eggPassesAffordFilter(dir, true) then
+				return hi
+			end
+			hi -= 1
+		end
+		return 0
+	end
+
+	function HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
+		if not zoneId or not EggsUtil or not EggCmds then
+			return 0
+		end
+		local hi = 0
+		pcall(function()
+			hi = EggCmds.GetHighestEggNumberAvailable() or 0
+		end)
+		if hi <= 0 then
+			return 0
+		end
+		local allowInf = HatchAssist.infinityAllowed(tracked)
+		for i = hi, 1, -1 do
+			local dir = safeEggByNumber(i)
+			if dir and dir._id then
+				if not (dir._id == "Infinity Egg" and not allowInf) then
+					local ez = AR.QuestWorldHelpers.getEggZoneIdForNumber(i)
+					if ez and eggZoneIdsEqual(ez, zoneId) and eggPassesAffordFilter(dir, false) then
+						return i
+					end
+				end
+			end
+		end
+		return 0
+	end
+
+	function HatchAssist.pickEggNumberForHatch(tracked)
+		local explicit = AR.QuestWorldHelpers.questSpecifiesEggNumber(tracked)
+		if explicit and explicit > 0 then
+			return explicit, true
+		end
+		if cfg().preferZoneEggWhenProgress and MapCmds then
+			local cur = safeCurrentZone()
+			if cur then
+				local zn = HatchAssist.pickHighestEggInPhysicalZone(cur, tracked)
+				if zn > 0 then
+					return zn, false
+				end
+			end
+		end
+		return HatchAssist.pickEggNumber(tracked), false
+	end
+
+	function HatchAssist.pivotForEgg(eggDir, tracked)
+		if not eggDir or not cfg().pivotBeforeRemotePurchases or not cfg().hatchTeleportNearEgg then
+			return
+		end
+		if eggDir._id == "Infinity Egg" then
+			if HatchAssist.infinityAllowed(tracked) then
+				pivotNearestInfinityEggStand()
+			end
+			return
+		end
+		local uid = nil
+		if CustomEggsCmds and eggDir._id then
+			pcall(function()
+				uid = CustomEggsCmds.GetClosestById(eggDir._id)
+			end)
+		end
+		local yOff = cfg().hatchEggPivotYOffset or 8
+		local ch = LocalPlayer.Character
+		if uid then
+			local row = nil
+			pcall(function()
+				row = CustomEggsCmds.Get(uid)
+			end)
+			if row and row._model and ch then
+				pcall(function()
+					ch:PivotTo(row._model:GetPivot() * CFrame.new(0, yOff, 0))
+				end)
+				stabilizeCharacterPhysics(ch)
+			end
+			return
+		end
+		if eggDir.eggNumber and EggsUtil and EggsUtil.GetEggPart then
+			local part = nil
+			pcall(function()
+				part = EggsUtil.GetEggPart(eggDir.eggNumber)
+			end)
+			if part and ch then
+				pcall(function()
+					ch:PivotTo(part.CFrame * CFrame.new(0, yOff, 0))
+				end)
+				stabilizeCharacterPhysics(ch)
+				log("Pivot to physical egg", eggDir.eggNumber)
+			else
+				log("Failed to find physical egg part for", eggDir.eggNumber)
+			end
+		end
+	end
+
+	local MinigameAssist = (function()
+		local function forEachDescendantDepthLimited(root, maxDepth, callback)
+			if not root or type(callback) ~= "function" then
+				return
+			end
+			local function visit(inst, depth)
+				callback(inst, depth)
+				if depth >= maxDepth then
+					return
+				end
+				for _, ch in ipairs(inst:GetChildren()) do
+					visit(ch, depth + 1)
+				end
+			end
+			visit(root, 0)
+		end
+
+		local function tryWave2Proximity(root, label)
+			local maxD = cfg().minigameWave2SearchDepth or 14
+			local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
+			local ch = LocalPlayer.Character
+			local pp = ch and ch.PrimaryPart
+			if not pp or not root then
+				return
+			end
+			local fired = 0
+			forEachDescendantDepthLimited(root, maxD, function(inst)
+				if fired >= maxP then
+					return
+				end
+				if inst:IsA("ProximityPrompt") and inst.Enabled then
+					local parent = inst.Parent
+					if parent and parent:IsA("BasePart") then
+						local dist = (parent.Position - pp.Position).Magnitude
+						if dist <= (inst.MaxActivationDistance or 10) + 10 then
+							Exec.fireProximityPrompt(inst)
+							fired = fired + 1
+						end
+					end
+				end
+			end)
+			if fired > 0 and label then
+				traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
+			end
+		end
+
+		local function tryGenericObbyFinish(root, instanceId)
+			if not root then
+				return
+			end
+			local maxD = cfg().minigameObbyFinishSearchDepth or 26
+			local names = cfg().minigameObbyFinishPartNames or {}
+			local nameSet = {}
+			for _, n in ipairs(names) do
+				nameSet[string.lower(tostring(n))] = true
+			end
+			local best, bestY = nil, -1e9
+			local bestCk, bestCkY = nil, -1e9
+			local function considerPart(p)
+				if not p or not p:IsA("BasePart") then
+					return
+				end
+				local ln = string.lower(p.Name)
+				if nameSet[ln] then
+					local y = p.Position.Y
+					if y > bestY then
+						bestY = y
+						best = p
+					end
+				elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
+					local y = p.Position.Y
+					if y > bestCkY then
+						bestCkY = y
+						bestCk = p
+					end
+				end
+			end
+			forEachDescendantDepthLimited(root, maxD, function(inst)
+				considerPart(inst)
+			end)
+			local target = best or bestCk
+			if not target then
+				return
+			end
+			local ch2 = LocalPlayer.Character
+			local pp = ch2 and ch2.PrimaryPart
+			if not pp then
+				return
+			end
+			if (pp.Position - target.Position).Magnitude > 12 then
+				pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
+				log("minigame obby pivot", instanceId, target.Name)
+			end
+			if cfg().minigameObbyTouchNearbyParts then
+				for _, chChild in ipairs(target:GetChildren()) do
+					if chChild:IsA("BasePart") then
+						Exec.fireTouchInterest(chChild, pp, 0)
+					end
+				end
+				Exec.fireTouchInterest(target, pp, 0)
+			end
+			if cfg().minigameObbyFireChildPrompts then
+				local nPrompt = 0
+				forEachDescendantDepthLimited(target, 4, function(inst)
+					if nPrompt > 12 then
+						return
+					end
+					if inst:IsA("ProximityPrompt") and inst.Enabled then
+						Exec.fireProximityPrompt(inst)
+						nPrompt = nPrompt + 1
+					end
+				end)
+			end
+		end
+
+		local function wave2Combo(root, label)
+			tryWave2Proximity(root, label)
+			tryGenericObbyFinish(root, label)
+		end
+
+		local function instanceIdInMinigameList(id, list)
+			if type(id) ~= "string" or id == "" or type(list) ~= "table" then
+				return false
+			end
+			for _, v in ipairs(list) do
+				if v == id then
+					return true
+				end
+			end
+			return false
+		end
+
+		local function shouldQuestAutoLeaveInstanceId(id)
+			if type(id) ~= "string" or id == "" then
+				return false
+			end
+			if rankGuiSynthProtectionAllowsStay(id) then
+				return false
+			end
+			local mode = cfg().minigameAssistMode or "skip"
+			local explicit = cfg().instanceIdsForceLeave
+			if type(explicit) == "table" and #explicit > 0 then
+				return instanceIdInMinigameList(id, explicit)
+			end
+			local list = cfg().questBlockedInstanceIds
+			if type(list) ~= "table" or not instanceIdInMinigameList(id, list) then
+				return false
+			end
+			if mode == "complete" and instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
+				return false
+			end
+			return true
+		end
+
+		local function getMinigameInstanceRoot(instanceId)
+			if type(instanceId) ~= "string" or instanceId == "" then
+				return nil
+			end
+			local things = workspace:FindFirstChild("__THINGS")
+			if not things then
+				return nil
+			end
+			local instances = things:FindFirstChild("Instances")
+			if not instances then
+				return nil
+			end
+			local folder = instances:FindFirstChild(instanceId)
+			if folder then
+				return folder
+			end
+			if InstancingCmds then
+				local m = nil
+				pcall(function()
+					m = InstancingCmds.Get and InstancingCmds.Get()
+					if not m and InstancingCmds.GetModel then
+						m = InstancingCmds.GetModel()
+					end
+				end)
+				if m then
+					return m
+				end
+			end
+			return nil
+		end
+
+		local function minigameNoFishDigAssist(_root, _id)
+		end
+		local chestRush = function(root)
+			wave2Combo(root, "ChestRush")
+		end
+		local wave2Handlers = {
+			Fishing = minigameNoFishDigAssist,
+			AdvancedFishing = minigameNoFishDigAssist,
+			FishingEvent = minigameNoFishDigAssist,
+			Digsite = minigameNoFishDigAssist,
+			AdvancedDigsite = minigameNoFishDigAssist,
+			ChestRush = chestRush,
+		}
+
+		return {
+			instanceIdInMinigameList = instanceIdInMinigameList,
+			shouldQuestAutoLeaveInstanceId = shouldQuestAutoLeaveInstanceId,
+			getMinigameInstanceRoot = getMinigameInstanceRoot,
+			tryGenericObbyFinish = tryGenericObbyFinish,
+			wave2Handlers = wave2Handlers,
+		}
+	end)()
+
+	local function tryQuestEggHatchAssist(tracked, opts)
 	opts = opts or {}
 	local progressOnly = opts.progressOnly == true
+	local function hatchSkipDiag(tag, extra)
+		if not cfg().log and not cfg().verboseLog then
+			return
+		end
+		traceThrottled("hatch_skip_" .. tostring(tag), 12, "hatch", tag, "progressOnly=", progressOnly, extra)
+	end
 	if not cfg().questAutoHatch or not HatchingCmds or not EggCmds or not HatchingTypes or not EggsUtil then
+		hatchSkipDiag("modules_missing")
 		return
 	end
 	if hatchBusy then
+		hatchSkipDiag("hatch_busy")
 		return
 	end
 	local gen = (tracked and tracked._generatorName) or ""
 	if not cfg().questAutoHatchAnytime and not progressOnly then
 		local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
 		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
+			hatchSkipDiag("objective_not_egg_hatch", gen)
 			return
 		end
 	end
 	local now = tick()
 	if progressOnly then
 		local pcd = cfg().autoHatchProgressCooldown
-		if type(pcd) == "number" and pcd > 0 and (now - lastProgressOnlyHatchTick) < pcd then
+		if type(pcd) == "number" and pcd > 0 and (now - Ticks.lastProgressOnlyHatchTick) < pcd then
+			hatchSkipDiag("progress_cooldown", pcd)
 			return
 		end
 	end
-	if now - lastQuestHatchTick < (cfg().questHatchAssistInterval or 1.1) then
+	if now - Ticks.lastQuestHatchTick < (cfg().questHatchAssistInterval or 1.1) then
+		hatchSkipDiag("assist_interval")
 		return
 	end
-	local n, fromQuestText = HatchAssist.pickEggNumberForHatch(tracked)
+	local n, fromQuestText = 0, false
+	local pickOk, pickErr = pcall(function()
+		n, fromQuestText = HatchAssist.pickEggNumberForHatch(tracked)
+	end)
+	if not pickOk then
+		if suppressHatchDirectoryZoneError("pick", pickErr, now, progressOnly) then
+			return
+		end
+		error(pickErr)
+	end
 	if n <= 0 then
+		hatchSkipDiag("no_egg_number")
 		return
 	end
-	local eggDir = EggsUtil.GetByNumber(n)
+	local eggDir = safeEggByNumber(n)
 	if not eggDir or not eggDir._id then
+		hatchSkipDiag("egg_dir_missing", n)
 		return
 	end
 
 	if cfg().questEggTeleportIfWrongZone and fromQuestText and MapCmds and Network and TeleportMapCmds then
-		local cur = MapCmds.GetCurrentZone()
-		local eggZ = getEggZoneIdForNumber(n)
-		if eggZ and cur and eggZ ~= cur then
+		local cur = safeCurrentZone()
+		local eggZ = AR.QuestWorldHelpers.getEggZoneIdForNumber(n)
+		if eggZ and cur and not eggZoneIdsEqual(eggZ, cur) then
 			local can = false
 			local reason = nil
 			pcall(function()
 				can, reason = TeleportMapCmds.CanTeleportTo(eggZ)
 			end)
 			if can then
-				lastQuestHatchTick = now
+				Ticks.lastQuestHatchTick = now
 				armHatchBusyEnd(cfg().hatchBusyHoldSeconds or 2.6)
 				if progressOnly then
-					lastProgressOnlyHatchTick = now
+					Ticks.lastProgressOnlyHatchTick = now
 				end
 				if cfg().questEggTeleportClientPivotOnly ~= false then
 					log("quest egg client pivot → zone", eggZ, "for", eggDir._id, reason)
-					Teleports.schedulePivotRepeats(eggZ)
+					AR.Teleports.schedulePivotRepeats(eggZ)
 				else
-					pcall(function()
-						Network.Invoke("Teleports_RequestTeleport", eggZ)
-					end)
+					AR.Net.invoke("Teleports_RequestTeleport", eggZ)
 					log("quest egg TP → zone", eggZ, "for", eggDir._id, reason)
-					Teleports.schedulePivotRepeats(eggZ)
+					AR.Teleports.schedulePivotRepeats(eggZ)
 				end
 				return true
 			end
@@ -3651,31 +5981,95 @@ local function tryQuestEggHatchAssist(tracked, opts)
 	pcall(function()
 		locked = EggCmds.IsEggLocked(eggDir._id) == true
 	end)
-	if locked and cfg().questAutoUnlockEgg then
-		lastQuestHatchTick = now
+	if locked then
+		if cfg().questAutoUnlockEgg then
+			local unlockCd = tonumber(cfg().questEggUnlockCooldown) or 8
+			if now - (lastEggUnlockAt[eggDir._id] or 0) >= unlockCd then
+				lastEggUnlockAt[eggDir._id] = now
+				Ticks.lastQuestHatchTick = now
+				pcall(function()
+					EggCmds.RequestUnlock(eggDir._id)
+				end)
+				log("Eggs_RequestUnlock", eggDir._id)
+			else
+				hatchSkipDiag("unlock_request_throttled", eggDir._id)
+			end
+		end
 		pcall(function()
-			EggCmds.RequestUnlock(eggDir._id)
+			locked = EggCmds.IsEggLocked(eggDir._id) == true
 		end)
-		log("Eggs_RequestUnlock", eggDir._id)
-		return
+		if locked then
+			hatchSkipDiag("egg_still_locked", eggDir._id)
+			return
+		end
 	end
-	local hatchAmt = 1
+	local capFromGame = 1
 	pcall(function()
 		local mx = EggCmds.GetMaxHatch(eggDir)
-		hatchAmt = math.clamp(mx or 1, 1, 12)
+		capFromGame = math.clamp(mx or 1, 1, 12)
 	end)
-	lastQuestHatchTick = now
+	local hatchAmt = 0
+	local affordOk, affordErr = pcall(function()
+		hatchAmt = eggMaxAffordableHatchCount(eggDir, capFromGame)
+	end)
+	if not affordOk then
+		if suppressHatchDirectoryZoneError("afford", affordErr, now, progressOnly) then
+			return
+		end
+		error(affordErr)
+	end
+	local reservedForZone, reservedZone = 0, nil
+	local reserveOk, reserveErr = pcall(function()
+		reservedForZone, reservedZone = nextZoneCurrencyReserveForEgg(eggDir, progressOnly, fromQuestText)
+	end)
+	if not reserveOk then
+		if suppressHatchDirectoryZoneError("reserve", reserveErr, now, progressOnly) then
+			return
+		end
+		error(reserveErr)
+	end
+	if reservedForZone > 0 then
+		local cid, unit = eggHatchUnitPriceAndCurrency(eggDir)
+		local bal = 0
+		pcall(function()
+			bal = CurrencyCmds.Get(cid) or 0
+		end)
+		local spendable = math.max(0, bal - reservedForZone)
+		if type(unit) == "number" and unit > 0 then
+			hatchAmt = math.min(hatchAmt, math.clamp(math.floor(spendable / unit), 0, capFromGame))
+		end
+		if hatchAmt < 1 and (cfg().log or cfg().verboseLog) then
+			log(
+				"progress hatch reserve next zone",
+				eggDir._id,
+				"reserve",
+				reservedForZone,
+				"bal",
+				bal,
+				"next",
+				reservedZone and reservedZone.id
+			)
+		end
+	end
+	if hatchAmt < 1 then
+		if cfg().log or cfg().verboseLog then
+			log("quest hatch skip: no currency for", eggDir._id, "cap", capFromGame, "progressOnly", progressOnly)
+		end
+		hatchSkipDiag("no_currency", eggDir._id)
+		return
+	end
+	Ticks.lastQuestHatchTick = now
 
 	local pivotDelay = cfg().hatchAfterPivotDelay or 0.38
 	local busyHold = cfg().hatchBusyHoldSeconds or 2.6
 
 	local function runPurchaseInvoke(customUid)
 		if customUid then
-			Network.Invoke("CustomEggs_Hatch", customUid, hatchAmt)
+			AR.Net.invoke("CustomEggs_Hatch", customUid, hatchAmt)
 		elseif EggCmds and type(EggCmds.RequestPurchase) == "function" then
 			EggCmds.RequestPurchase(eggDir._id, hatchAmt)
 		else
-			Network.Invoke("Eggs_RequestPurchase", eggDir._id, hatchAmt)
+			AR.Net.invoke("Eggs_RequestPurchase", eggDir._id, hatchAmt)
 		end
 	end
 
@@ -3697,13 +6091,13 @@ local function tryQuestEggHatchAssist(tracked, opts)
 				if type(nBurst) == "number" and nBurst > 0 and type(dBurst) == "number" and dBurst >= 0 then
 					for _ = 1, nBurst do
 						task.wait(dBurst)
-						tryClickEggOpeningPrompt({ ignoreThrottles = true })
+						ARUI.tryClickEggOpeningPrompt({ ignoreThrottles = true })
 					end
 				end
 			end)
 		end)
 		if progressOnly then
-			lastProgressOnlyHatchTick = now
+			Ticks.lastProgressOnlyHatchTick = now
 		end
 		log("quest hatch (hidden)", eggDir._id, hatchAmt, gen)
 		return true
@@ -3735,237 +6129,32 @@ local function tryQuestEggHatchAssist(tracked, opts)
 		end)
 	end)
 	if progressOnly then
-		lastProgressOnlyHatchTick = now
+		Ticks.lastProgressOnlyHatchTick = now
 	end
 	log("quest hatch", eggDir._id, hatchAmt, gen)
 	return true
 end
 
---- Минигame: один IIFE → таблица (иначе корневой чанк превышает лимит ~200 локалей Luau).
-local MinigameAssist = (function()
-	local function forEachDescendantDepthLimited(root, maxDepth, callback)
-		if not root or type(callback) ~= "function" then
-			return
-		end
-		local function visit(inst, depth)
-			callback(inst, depth)
-			if depth >= maxDepth then
-				return
-			end
-			for _, ch in ipairs(inst:GetChildren()) do
-				visit(ch, depth + 1)
-			end
-		end
-		visit(root, 0)
-	end
-
-	local function tryWave2Proximity(root, label)
-		local maxD = cfg().minigameWave2SearchDepth or 14
-		local maxP = cfg().minigameWave2MaxPromptsPerTick or 8
-		local ch = LocalPlayer.Character
-		local pp = ch and ch.PrimaryPart
-		if not pp or not root then
-			return
-		end
-		local fired = 0
-		forEachDescendantDepthLimited(root, maxD, function(inst)
-			if fired >= maxP then
-				return
-			end
-			if inst:IsA("ProximityPrompt") and inst.Enabled then
-				local parent = inst.Parent
-				if parent and parent:IsA("BasePart") then
-					local dist = (parent.Position - pp.Position).Magnitude
-					if dist <= (inst.MaxActivationDistance or 10) + 10 then
-						Exec.fireProximityPrompt(inst)
-						fired = fired + 1
-					end
-				end
-			end
-		end)
-		if fired > 0 and label then
-			traceThrottled("minigame_wave2_" .. tostring(label), 2, "minigame", label, "prompts", fired)
-		end
-	end
-
-	local function tryGenericObbyFinish(root, instanceId)
-		if not root then
-			return
-		end
-		local maxD = cfg().minigameObbyFinishSearchDepth or 26
-		local names = cfg().minigameObbyFinishPartNames or {}
-		local nameSet = {}
-		for _, n in ipairs(names) do
-			nameSet[string.lower(tostring(n))] = true
-		end
-		local best, bestY = nil, -1e9
-		local bestCk, bestCkY = nil, -1e9
-		local function considerPart(p)
-			if not p or not p:IsA("BasePart") then
-				return
-			end
-			local ln = string.lower(p.Name)
-			if nameSet[ln] then
-				local y = p.Position.Y
-				if y > bestY then
-					bestY = y
-					best = p
-				end
-			elseif cfg().minigameObbyPreferCheckpointFallback ~= false and string.find(ln, "checkpoint", 1, true) then
-				local y = p.Position.Y
-				if y > bestCkY then
-					bestCkY = y
-					bestCk = p
-				end
-			end
-		end
-		forEachDescendantDepthLimited(root, maxD, function(inst)
-			considerPart(inst)
-		end)
-		local target = best or bestCk
-		if not target then
-			return
-		end
-		local ch2 = LocalPlayer.Character
-		local pp = ch2 and ch2.PrimaryPart
-		if not pp then
-			return
-		end
-		if (pp.Position - target.Position).Magnitude > 12 then
-			pivotCharacterToCFrame(target.CFrame * CFrame.new(0, 4, 0))
-			log("minigame obby pivot", instanceId, target.Name)
-		end
-		if cfg().minigameObbyTouchNearbyParts then
-			for _, chChild in ipairs(target:GetChildren()) do
-				if chChild:IsA("BasePart") then
-					Exec.fireTouchInterest(chChild, pp, 0)
-				end
-			end
-			Exec.fireTouchInterest(target, pp, 0)
-		end
-		if cfg().minigameObbyFireChildPrompts then
-			local nPrompt = 0
-			forEachDescendantDepthLimited(target, 4, function(inst)
-				if nPrompt > 12 then
-					return
-				end
-				if inst:IsA("ProximityPrompt") and inst.Enabled then
-					Exec.fireProximityPrompt(inst)
-					nPrompt = nPrompt + 1
-				end
-			end)
-		end
-	end
-
-	local function wave2Combo(root, label)
-		tryWave2Proximity(root, label)
-		tryGenericObbyFinish(root, label)
-	end
-
-	local function instanceIdInMinigameList(id, list)
-		if type(id) ~= "string" or id == "" or type(list) ~= "table" then
-			return false
-		end
-		for _, v in ipairs(list) do
-			if v == id then
-				return true
-			end
-		end
-		return false
-	end
-
-	local function shouldQuestAutoLeaveInstanceId(id)
-		if type(id) ~= "string" or id == "" then
-			return false
-		end
-		local mode = cfg().minigameAssistMode or "skip"
-		local explicit = cfg().instanceIdsForceLeave
-		if type(explicit) == "table" and #explicit > 0 then
-			return instanceIdInMinigameList(id, explicit)
-		end
-		local list = cfg().questBlockedInstanceIds
-		if type(list) ~= "table" or not instanceIdInMinigameList(id, list) then
-			return false
-		end
-		if mode == "complete" and instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
-			return false
-		end
-		return true
-	end
-
-	local function getMinigameInstanceRoot(instanceId)
-		if type(instanceId) ~= "string" or instanceId == "" then
-			return nil
-		end
-		local things = workspace:FindFirstChild("__THINGS")
-		if not things then
-			return nil
-		end
-		local instances = things:FindFirstChild("Instances")
-		if not instances then
-			return nil
-		end
-		local folder = instances:FindFirstChild(instanceId)
-		if folder then
-			return folder
-		end
-		if InstancingCmds then
-			local m = nil
-			pcall(function()
-				m = InstancingCmds.Get and InstancingCmds.Get()
-				if not m and InstancingCmds.GetModel then
-					m = InstancingCmds.GetModel()
-				end
-			end)
-			if m then
-				return m
-			end
-		end
-		return nil
-	end
-
-	local fishing = function(root)
-		wave2Combo(root, "Fishing")
-	end
-	local digsite = function(root)
-		wave2Combo(root, "Digsite")
-	end
-	local chestRush = function(root)
-		wave2Combo(root, "ChestRush")
-	end
-	local wave2Handlers = {
-		Fishing = fishing,
-		AdvancedFishing = fishing,
-		FishingEvent = fishing,
-		Digsite = digsite,
-		AdvancedDigsite = digsite,
-		ChestRush = chestRush,
-	}
-
 	return {
-		instanceIdInMinigameList = instanceIdInMinigameList,
-		shouldQuestAutoLeaveInstanceId = shouldQuestAutoLeaveInstanceId,
-		getMinigameInstanceRoot = getMinigameInstanceRoot,
-		tryGenericObbyFinish = tryGenericObbyFinish,
-		wave2Handlers = wave2Handlers,
+		HatchAssist = HatchAssist,
+		MinigameAssist = MinigameAssist,
+		eggZoneIdsEqual = eggZoneIdsEqual,
+		eggMaxAffordableHatchCount = eggMaxAffordableHatchCount,
+		tryQuestEggHatchAssist = tryQuestEggHatchAssist,
 	}
 end)()
 
---- Ниже: методы AutoRankRuntimeState (локальные function — свой лимит регистров).
 function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatching)
 	if isHatching or hatchBusy then
 		return
 	end
 
-	local cur = nil
+	local cur = safeCurrentZone()
 	local maxId = nil
-	pcall(function()
-		cur = MapCmds and MapCmds.GetCurrentZone()
-	end)
 	pcall(function()
 		maxId = ZoneCmds and select(1, ZoneCmds.GetMaxOwnedZone())
 	end)
-	local behindMax = cur and maxId and type(maxId) == "string" and not zonesIdMatch(cur, maxId)
+	local behindMax = cur and maxId and type(maxId) == "string" and not AR.zonesIdMatch(cur, maxId)
 
 	local skipRemoteTp = cfg().advancedRemoteFarm and cfg().remoteFarmSkipMaxZoneTeleport
 	if cfg().forceTeleportWhenBehindMaxZone and behindMax then
@@ -3978,60 +6167,63 @@ function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatch
 		return
 	end
 
-	if trackedObjective and cfg().questAssistSkipFarmTeleportWhenObjective and objectiveHasWorldTarget(trackedObjective) then
+	if trackedObjective and cfg().questAssistSkipFarmTeleportWhenObjective and AR.QuestWorldHelpers.objectiveHasWorldTarget(trackedObjective) then
 		return
 	end
-	if not cfg().teleportToMaxFarmZone or not teleportFlagOk() then
+	if not cfg().teleportToMaxFarmZone or not ARZone.teleportFlagOk() then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	if safeIsInInstance() then
 		return
 	end
 	if not TeleportMapCmds or not ZoneCmds or not MapCmds or not Network or not ZonesUtil then
 		return
 	end
 	local now = tick()
-	if now - lastTeleportTick < (cfg().teleportInterval or 10) then
+	if now - Ticks.lastTeleportTick < (cfg().teleportInterval or 10) then
 		return
 	end
 	local maxZoneId = select(1, ZoneCmds.GetMaxOwnedZone())
 	if not maxZoneId or type(maxZoneId) ~= "string" then
 		return
 	end
-	local curZone = MapCmds.GetCurrentZone()
-	if zonesIdMatch(curZone, maxZoneId) then
-		if cfg().teleportClientPivotWhenSameZone and not playerNearZoneTeleportPoint(maxZoneId) then
-			lastTeleportTick = now
+	local curZone = safeCurrentZone()
+	if AR.zonesIdMatch(curZone, maxZoneId) then
+		if cfg().teleportClientPivotWhenSameZone and not AR.playerNearZoneTeleportPoint(maxZoneId) then
+			Ticks.lastTeleportTick = now
 			log("teleport same zone client pivot", maxZoneId)
-			Teleports.schedulePivotRepeats(maxZoneId)
+			AR.Teleports.schedulePivotRepeats(maxZoneId)
 		end
 		return
 	end
-	local can, reason = TeleportMapCmds.CanTeleportTo(maxZoneId)
+	local can, reason = false, nil
+	pcall(function()
+		can, reason = TeleportMapCmds.CanTeleportTo(maxZoneId)
+	end)
 	if not can then
-		log("teleport skip CanTeleportTo", maxZoneId, reason)
+		logThrottled(
+			"teleport_cant_now",
+			tonumber(cfg().questTeleportCanTeleportLogThrottleSeconds) or 15,
+			"teleport skip CanTeleportTo",
+			maxZoneId,
+			reason
+		)
 		return
 	end
-	lastTeleportTick = now
+	Ticks.lastTeleportTick = now
 	if cfg().teleportMaxZoneClientPivotOnly ~= false then
 		log("teleport client pivot max zone", maxZoneId, "from", curZone)
-		Teleports.schedulePivotRepeats(maxZoneId)
+		AR.Teleports.schedulePivotRepeats(maxZoneId)
 		return
 	end
-	local invokeOk = false
-	pcall(function()
-		local r = Network.Invoke("Teleports_RequestTeleport", maxZoneId)
-		invokeOk = r ~= false and r ~= nil
-	end)
+	local r = AR.Net.invoke("Teleports_RequestTeleport", maxZoneId)
+	local invokeOk = r ~= false and r ~= nil
 	if not invokeOk then
 		log("Teleports_RequestTeleport failed", maxZoneId)
 		return
 	end
 	log("Teleport pivot (server+client)", maxZoneId, "from", curZone)
-	Teleports.schedulePivotRepeats(maxZoneId)
+	AR.Teleports.schedulePivotRepeats(maxZoneId)
 end
 
 function AutoRankRuntimeState.getBreakableFarmCenterPosition(zoneId)
@@ -4063,7 +6255,6 @@ function AutoRankRuntimeState.getBreakableFarmCenterPosition(zoneId)
 	return nil
 end
 
---- После телепорта игрок часто на точке «Teleport», а не над BREAKABLE_SPAWNS — тянем в центр Main.
 function AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
 	if isHatching or hatchBusy or not cfg().teleportToBreakableFarmCenter then
 		return
@@ -4071,10 +6262,7 @@ function AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
 	if cfg().advancedRemoteFarm and cfg().remoteFarmSkipBreakablePull then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	if safeIsInInstance() then
 		return
 	end
 	if not ZonesUtil or not ZoneCmds or not MapCmds then
@@ -4084,7 +6272,7 @@ function AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
 	if not maxId or type(maxId) ~= "string" then
 		return
 	end
-	local cur = MapCmds.GetCurrentZone()
+	local cur = safeCurrentZone()
 	if cur ~= maxId then
 		return
 	end
@@ -4101,10 +6289,10 @@ function AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
 		return
 	end
 	local now = tick()
-	if now - lastFarmCenterTick < (cfg().farmBreakablePullInterval or 1.15) then
+	if now - Ticks.lastFarmCenterTick < (cfg().farmBreakablePullInterval or 1.15) then
 		return
 	end
-	lastFarmCenterTick = now
+	Ticks.lastFarmCenterTick = now
 	local yOff = cfg().farmBreakableYOffset or 5
 	pcall(function()
 		pp.CFrame = CFrame.new(pos + Vector3.new(0, yOff, 0))
@@ -4132,17 +6320,14 @@ end
 
 function AutoRankRuntimeState.tryMinigameAssistPulse()
 	local now = tick()
-	if now - lastMinigameAssistTick < (cfg().minigameAssistTickInterval or 0.16) then
+	if now - Ticks.lastMinigameAssistTick < (cfg().minigameAssistTickInterval or 0.16) then
 		return
 	end
-	lastMinigameAssistTick = now
+	Ticks.lastMinigameAssistTick = now
 	if not InstancingCmds then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds.IsInInstance()
-	end)
-	if not okIn or not inInst then
+	if not safeIsInInstance() then
 		minigameSessionInstanceId = nil
 		return
 	end
@@ -4158,13 +6343,12 @@ function AutoRankRuntimeState.tryMinigameAssistPulse()
 		minigameSessionStartTick = now
 	end
 	local mode = cfg().minigameAssistMode or "skip"
-	local root = MinigameAssist.getMinigameInstanceRoot(id)
+	local root = AR.ARC.MinigameAssist.getMinigameInstanceRoot(id)
+	local inPlayList =
+		AR.ARC.MinigameAssist.instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {})
+	local assistComplete = mode == "complete" and inPlayList
 
-	if mode ~= "complete" then
-		return
-	end
-
-	if not MinigameAssist.instanceIdInMinigameList(id, cfg().minigameAutoPlayInstanceIds or {}) then
+	if not assistComplete then
 		return
 	end
 
@@ -4183,11 +6367,11 @@ function AutoRankRuntimeState.tryMinigameAssistPulse()
 		return
 	end
 
-	local w2 = MinigameAssist.wave2Handlers[id]
+	local w2 = AR.ARC.MinigameAssist.wave2Handlers[id]
 	if w2 then
 		w2(root)
 	else
-		MinigameAssist.tryGenericObbyFinish(root, id)
+		AR.ARC.MinigameAssist.tryGenericObbyFinish(root, id)
 	end
 
 	AutoRankRuntimeState.tryMinigameTouchLeaveTeleport(root)
@@ -4197,10 +6381,7 @@ function AutoRankRuntimeState.tryQuestAutoLeaveBlockedInstance()
 	if not cfg().questAutoLeaveBlockedInstances or not InstancingCmds then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds.IsInInstance()
-	end)
-	if not okIn or not inInst then
+	if not safeIsInInstance() then
 		return
 	end
 	local id = nil
@@ -4210,7 +6391,7 @@ function AutoRankRuntimeState.tryQuestAutoLeaveBlockedInstance()
 	if type(id) ~= "string" or id == "" then
 		return
 	end
-	if not MinigameAssist.shouldQuestAutoLeaveInstanceId(id) then
+	if not AR.ARC.MinigameAssist.shouldQuestAutoLeaveInstanceId(id) then
 		return
 	end
 	pcall(function()
@@ -4233,9 +6414,7 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 	end
 	tryHatchBusyWatchdog()
 	AutoRankRuntimeState.tryQuestAutoLeaveBlockedInstance()
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
+	local inInst, okIn = safeIsInInstance()
 	if not okIn then
 		cachedTrackedObjective = nil
 		AutoRankRuntimeState.diagQuest = {
@@ -4254,48 +6433,55 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		}
 		return nil, false
 	end
-	local tracked = refreshTrackedObjective()
+	local tracked = ARG.refreshTrackedObjective()
 	local isHatching = false
+	pcall(function()
+		ARQ.tryQuestSpawnInventoryBreakables(tracked)
+	end)
 	if tracked then
 		local qaOk, qaErr = pcall(function()
 			QuestAssist.tryKeywordCooldownReset(tracked)
-			tryQuestResolveDisplayTargets(tracked)
-			if tracked and not QuestAssist.shouldSkipObjectiveInteraction(tracked) then
-				tryTravelWorldDirectNetworkFire(tracked._generatorName)
-			end
+			ARQ.tryQuestResolveDisplayTargets(tracked)
 		end)
 		if not qaOk then
 			warnErr("quest_resolve_targets", qaErr)
 		end
 		local hhOk, hhErr = pcall(function()
-			isHatching = tryQuestEggHatchAssist(tracked) == true or hatchBusy == true
+			isHatching = AR.ARC.tryQuestEggHatchAssist(tracked) == true or hatchBusy == true
 		end)
 		if not hhOk then
 			warnErr("tryQuestEggHatchAssist", hhErr)
 		end
 	end
 	local pfOk, pfErr = pcall(function()
-		tryQuestPlaceFlexibleFlag(tracked)
+		AR.QuestWorldHelpers.tryQuestPlaceFlexibleFlag(tracked)
 	end)
 	if not pfOk then
 		warnErr("tryQuestPlaceFlexibleFlag", pfErr)
 	end
-	pcall(function()
-		tryQuestEquipEnchantFromInventory()
-	end)
 	local dqEnd = AutoRankRuntimeState.diagQuest
 	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchBusy then
+		local eggRelated = tracked and QuestAssist.objectiveMentionsEggOrHatch(tracked)
+		local allowNonEggProgress = tracked
+			and cfg().autoHatchProgressWhenNonEggQuest ~= false
+			and not eggRelated
 		local wantProgress = not tracked
 			or (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
 			or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
+			or allowNonEggProgress
 		if wantProgress then
 			local phOk, phErr = pcall(function()
-				if tryQuestEggHatchAssist(nil, { progressOnly = true }) == true then
+				if AR.ARC.tryQuestEggHatchAssist(nil, { progressOnly = true }) == true then
 					isHatching = true
 				end
 			end)
 			if not phOk then
-				warnErr("tryQuestEggHatchAssist_progressOnly", phErr)
+				local phe = tostring(phErr)
+				if string.find(phe, "Directory.Zones", 1, true) or string.find(phe, "Unknown Directory Zones", 1, true) then
+					traceThrottled("progress_hatch_dir_zone_outer", 30, "hatch", "Directory.Zones during progress hatch (non-fatal):", phErr)
+				else
+					warnErr("tryQuestEggHatchAssist_progressOnly", phErr)
+				end
 			end
 		end
 	end
@@ -4308,16 +6494,13 @@ function AutoRankRuntimeState.tryAutoEquipBestPets()
 		return
 	end
 	local now = tick()
-	if now - lastAutoEquipBestTick < (cfg().autoEquipBestPetsInterval or 14) then
+	if now - Ticks.lastAutoEquipBestTick < (cfg().autoEquipBestPetsInterval or 14) then
 		return
 	end
-	local okIn, inInst = pcall(function()
-		return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-	end)
-	if okIn and inInst then
+	if safeIsInInstance() then
 		return
 	end
-	lastAutoEquipBestTick = now
+	Ticks.lastAutoEquipBestTick = now
 	pcall(function()
 		PetCmds.EquipBest()
 	end)
@@ -4329,7 +6512,7 @@ function AutoRankRuntimeState.tryClaimRankRewards()
 		return
 	end
 	local now = tick()
-	if now - lastClaimTick < (cfg().claimInterval or 0.35) then
+	if now - Ticks.lastClaimTick < (cfg().claimInterval or 0.35) then
 		return
 	end
 	do
@@ -4348,13 +6531,11 @@ function AutoRankRuntimeState.tryClaimRankRewards()
 	if #keys == 0 then
 		return
 	end
-	lastClaimTick = now
+	Ticks.lastClaimTick = now
 	local spacing = cfg().claimDebounce or 0.28
 	task.spawn(function()
 		for i, key in ipairs(keys) do
-			pcall(function()
-				Network.Fire("Ranks_ClaimReward", key)
-			end)
+			AR.Net.fire("Ranks_ClaimReward", key)
 			log("claim Ranks_ClaimReward", key)
 			if i < #keys then
 				task.wait(spacing)
@@ -4368,7 +6549,7 @@ function AutoRankRuntimeState.tryRankUpViaGui()
 		return
 	end
 	local now = tick()
-	if now - lastRankUpGuiTick < (cfg().rankUpGuiInterval or 1.2) then
+	if now - Ticks.lastRankUpGuiTick < (cfg().rankUpGuiInterval or 1.2) then
 		return
 	end
 	if not RankCmds or not GUI then
@@ -4380,7 +6561,6 @@ function AutoRankRuntimeState.tryRankUpViaGui()
 	end)
 	
 	if not ok then
-		-- Если LazyModuleLoader: Unknown entry 'Ranks' в новом мире
 		return
 	end
 	
@@ -4393,7 +6573,7 @@ function AutoRankRuntimeState.tryRankUpViaGui()
 	if not allRedeemed then
 		return
 	end
-	lastRankUpGuiTick = now
+	Ticks.lastRankUpGuiTick = now
 	local okR, rankGui = pcall(function()
 		return GUI.Rank()
 	end)
@@ -4416,7 +6596,6 @@ function AutoRankRuntimeState.farmBreakableClassList()
 	return t
 end
 
---- Кэш тяжёлого AllByZoneAndClass × N классов между кадрами Heartbeat
 
 function AutoRankRuntimeState.farmCandidateCacheStore(list, diag)
 	local fc = AutoRankRuntimeState.farmCandidateCache
@@ -4440,19 +6619,12 @@ function AutoRankRuntimeState.farmDiagNew()
 end
 
 function AutoRankRuntimeState.farmGetInInstanceFlag()
-	if not InstancingCmds or not InstancingCmds.IsInInstance then
-		return false
-	end
-	local ok, res = pcall(function()
-		return InstancingCmds.IsInInstance()
-	end)
-	return ok and res == true
+	return safeIsInInstance()
 end
 
---- Позиция скана, zoneId, множитель радиуса; при отсутствии pos — diag.reasonEmpty и nil.
 function AutoRankRuntimeState.farmResolveScanOrigin(diag)
 	local pos = characterPrimaryPosition()
-	local zoneId = MapCmds.GetCurrentZone()
+	local zoneId = safeCurrentZone()
 	diag.zoneId = zoneId
 	local mult = 1
 	local inInstance = AutoRankRuntimeState.farmGetInInstanceFlag()
@@ -4514,7 +6686,8 @@ function AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 	for uid, entry in pairs(byUid) do
 		local model = entry.model
 		local pp = model and model.PrimaryPart
-		if pp and entry.dir and not entry.dir.NoTapping and not entry.disableDamage then
+		local allowShielded = cfg().farmExplosiveBreakableAssist == true
+		if pp and entry.dir and not entry.dir.NoTapping and (not entry.disableDamage or allowShielded) then
 			diag.rawTapOk += 1
 			local d = (pp.Position - pos).Magnitude
 			if d <= r then
@@ -4583,6 +6756,45 @@ function AutoRankRuntimeState.collectFarmCandidates()
 	return out
 end
 
+function AutoRankRuntimeState.tryAutoEnableAutoFarm()
+	if not cfg().autoEnableAutoFarm then
+		return
+	end
+	if not AutoFarmCmds or type(AutoFarmCmds.Enable) ~= "function" then
+		return
+	end
+	if not safeInDottedBox() then
+		return
+	end
+	local curZone = safeCurrentZone()
+	local now = tick()
+	local interval = cfg().autoFarmEnableInterval or 9
+	local zoneChanged = cfg().autoFarmReenableOnZoneChange and curZone ~= autoFarmEnabledZone
+	if not zoneChanged and now - Ticks.lastAutoFarmEnableTick < interval then
+		return
+	end
+	Ticks.lastAutoFarmEnableTick = now
+	pcall(function()
+		if AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() and not zoneChanged then
+			return
+		end
+		AutoFarmCmds.Enable()
+		autoFarmEnabledZone = curZone
+		log("AutoFarm_Enable fired zone=", tostring(curZone))
+	end)
+end
+
+function AutoRankRuntimeState.signalFireAutoClickerNearby(uid)
+	Signal.Fire("AutoClicker_Nearby", uid)
+end
+
+function AutoRankRuntimeState.dealDamageSignal(uid)
+	if not Signal or type(Signal.Fire) ~= "function" then
+		return
+	end
+	pcallWrap1(AutoRankRuntimeState.signalFireAutoClickerNearby, uid)
+end
+
 function AutoRankRuntimeState.farmTick()
 	if hatchBusy then
 		return
@@ -4597,8 +6809,24 @@ function AutoRankRuntimeState.farmTick()
 		return
 	end
 	focusBreakable(top.uid)
-	dealDamage(top.uid)
+	tryFarmExplosiveAssist(top)
+	local damaged = dealDamage(top.uid)
+	if cfg().farmSignalNearbyEnabled then
+		AutoRankRuntimeState.dealDamageSignal(top.uid)
+	end
 	tryFarmFireClickDetectorFallback(top.entry)
+	local multiN = tonumber(cfg().farmMultiHitCount) or 1
+	if damaged and multiN > 1 then
+		for i = 2, math.min(multiN, #list) do
+			local extra = list[i]
+			if extra and extra.uid then
+				AR.Net.unreliable("Breakables_PlayerDealDamage", extra.uid)
+				if cfg().farmSignalNearbyEnabled then
+					AutoRankRuntimeState.dealDamageSignal(extra.uid)
+				end
+			end
+		end
+	end
 end
 
 function AutoRankRuntimeState.tutorialTick()
@@ -4617,14 +6845,12 @@ end
 
 function AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedObjective, isHatching)
 	local d = {}
-	pcall(function()
-		d.cur = MapCmds and MapCmds.GetCurrentZone()
-	end)
+	d.cur = safeCurrentZone()
 	pcall(function()
 		d.maxOwned = select(1, ZoneCmds.GetMaxOwnedZone())
 	end)
 	local skip = nil
-	local behindMax = d.cur and d.maxOwned and type(d.maxOwned) == "string" and not zonesIdMatch(d.cur, d.maxOwned)
+	local behindMax = d.cur and d.maxOwned and type(d.maxOwned) == "string" and not AR.zonesIdMatch(d.cur, d.maxOwned)
 	local skipRemoteTp = cfg().advancedRemoteFarm and cfg().remoteFarmSkipMaxZoneTeleport
 	if cfg().forceTeleportWhenBehindMaxZone and behindMax then
 		skipRemoteTp = false
@@ -4633,30 +6859,27 @@ function AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedObjective, isHa
 		skip = "hatching_or_hatchBusy"
 	elseif skipRemoteTp then
 		skip = "remoteFarmSkipMaxZoneTeleport"
-	elseif trackedObjective and cfg().questAssistSkipFarmTeleportWhenObjective and objectiveHasWorldTarget(trackedObjective) then
+	elseif trackedObjective and cfg().questAssistSkipFarmTeleportWhenObjective and AR.QuestWorldHelpers.objectiveHasWorldTarget(trackedObjective) then
 		skip = "quest_world_target_blocks_farm_teleport"
 	elseif not cfg().teleportToMaxFarmZone then
 		skip = "teleportToMaxFarmZone_disabled"
-	elseif not teleportFlagOk() then
+	elseif not ARZone.teleportFlagOk() then
 		skip = "teleport_fflag_blocked"
 	else
-		local okIn, inInst = pcall(function()
-			return InstancingCmds and InstancingCmds.IsInInstance and InstancingCmds.IsInInstance()
-		end)
-		if okIn and inInst then
+		if safeIsInInstance() then
 			skip = "player_in_instance"
 		elseif not TeleportMapCmds or not ZoneCmds or not MapCmds or not Network or not ZonesUtil then
 			skip = "teleport_modules_missing"
 		else
 			local nowT = tick()
 			local interval = cfg().teleportInterval or 10
-			local elapsed = nowT - lastTeleportTick
+			local elapsed = nowT - Ticks.lastTeleportTick
 			if elapsed < interval then
 				skip = string.format("teleport_interval %.1fs left", interval - elapsed)
 			elseif not d.maxOwned or type(d.maxOwned) ~= "string" then
 				skip = "no_max_owned_zone_id"
-			elseif zonesIdMatch(d.cur, d.maxOwned) then
-				if cfg().teleportMaxZoneClientPivotOnly ~= false then
+			elseif AR.zonesIdMatch(d.cur, d.maxOwned) then
+				if cfg().teleportClientPivotWhenSameZone and cfg().teleportMaxZoneClientPivotOnly ~= false then
 					skip = "same_zone_client_pivot_if_far_from_marker"
 				else
 					skip = "already_at_max_owned_zone"
@@ -4705,11 +6928,15 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 		trace("pulse.farm.perClass", df.perClass)
 	end
 	local ql = dq.ok and "OK" or "NO"
+	local qSnippet = dq.snippet or dq.detail or ""
+	if dq.synthRankGui then
+		qSnippet = tostring(qSnippet) .. " [rankGuiSynth]"
+	end
 	trace(
 		"pulse.quest",
 		ql,
 		tostring(dq.generator or dq.where or "-"),
-		tostring(dq.snippet or dq.detail or "")
+		tostring(qSnippet)
 	)
 	if not dq.ok then
 		local dg = AutoRankRuntimeState.diagGoalPick
@@ -4727,8 +6954,7 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 	end
 end
 
---- Авто-клик "Yes" в диалогах (Message GUI) при перемещении
-local function tryAutoClickMessageDialogYes()
+function AutoRankRuntimeState.tryAutoClickMessageDialogYes()
 	local pg = LocalPlayer:FindFirstChild("PlayerGui")
 	if not pg then return end
 	local msg = pg:FindFirstChild("Message")
@@ -4738,16 +6964,16 @@ local function tryAutoClickMessageDialogYes()
 	for _, d in ipairs(msg:GetDescendants()) do
 		if d:IsA("GuiButton") and d.Visible then
 			local t = string.lower(tostring(d.Name))
-			local t2 = ""
-			pcall(function()
-				if d:IsA("TextLabel") or d:IsA("TextButton") then
-					t2 = string.lower(tostring(d.Text))
-				end
-			end)
-			if t == "yes" or string.find(t2, "yes", 1, true) then
+			local t2 = d:IsA("TextButton") and string.lower(string.gsub(tostring(d.Text), "[%c]", "")) or ""
+			local isYes = t == "yes" or string.find(t2, "yes", 1, true)
+			local isOk = t == "ok"
+				or t2 == "ok"
+				or t2 == "ok!"
+				or string.find(t2, "ok!", 1, true) == 1
+			if isYes or isOk then
 				clicked = clickGuiButtonRobust(d) or clicked
 				if clicked then
-					log("Message dialog auto-clicked YES", d:GetFullName())
+					log("Message dialog auto-clicked", isYes and "YES" or "OK", d:GetFullName())
 				end
 			end
 		end
@@ -4755,25 +6981,791 @@ local function tryAutoClickMessageDialogYes()
 	return clicked
 end
 
---- Вынесено из анонимного обработчика Heartbeat — меньше локальных регистров на замыкании (лимит Luau 200).
-function AutoRankRuntimeState.autoRankHeartbeatWork()
+do
+function AR.UI.tryDisableBuiltInAutoTapper()
+	if cfg().disableBuiltInAutoTapper ~= true then
+		return
+	end
+	if not Save or type(Save.Get) ~= "function" then
+		return
+	end
+	if not Gamepasses or type(Gamepasses.Owns) ~= "function" then
+		return
+	end
+	local now = tick()
+	local iv = tonumber(cfg().disableBuiltInAutoTapperInterval) or 2.0
+	if now - (Ticks.lastBuiltInAutoTapperTick or 0) < iv then
+		return
+	end
+	Ticks.lastBuiltInAutoTapperTick = now
+	local s = Save.Get()
+	if not s or s.AutoTapper ~= true then
+		return
+	end
+	local owns = false
+	pcall(function() owns = Gamepasses.Owns("Auto Tapper") == true end)
+	if not owns then
+		return
+	end
+	local newVal = AR.Net.invoke("AutoTapper_Toggle")
+	traceThrottled("disableBuiltInAutoTapper", 5, "tapper",
+		"toggled built-in Auto Tapper off (newVal=" .. tostring(newVal) .. ")")
+end
+
+AR.Pets.forceDisableListenerInstalled = false
+AR.Pets.targetZone = nil
+AR.Pets.lastEnableTry = 0
+AR.Pets.lastStarterPickTry = 0
+AR.Pets.pendingReenable = false
+AR.Pets.pendingEnableSpawn = false
+
+function AR.Pets.pickStarterPetIds()
+	local pet1 = cfg().autoPickStarterPet1
+	local pet2 = cfg().autoPickStarterPet2
+	if type(pet1) ~= "string" or pet1 == "" then
+		pet1 = "Axolotl"
+	end
+	if type(pet2) ~= "string" or pet2 == "" or pet2 == pet1 then
+		pet2 = "Cat"
+	end
+	if pet2 == pet1 then
+		pet2 = "Dog"
+	end
+	if Directory and Directory.Pets then
+		if not Directory.Pets[pet1] then
+			pet1 = "Axolotl"
+		end
+		if not Directory.Pets[pet2] or pet2 == pet1 then
+			pet2 = "Cat"
+		end
+		if pet2 == pet1 then
+			pet2 = Directory.Pets.Axolotl and "Axolotl" or "Dog"
+		end
+	end
+	return pet1, pet2
+end
+
+function AR.Pets.tryPickStarterPets()
+	if cfg().autoPickStarterPetsEnabled ~= true then
+		return false
+	end
+	if not (Save and type(Save.Get) == "function") then
+		return false
+	end
+	local now = tick()
+	local iv = tonumber(cfg().autoPickStarterPetsInterval) or 1.5
+	if now - (AR.Pets.lastStarterPickTry or 0) < iv then
+		return false
+	end
+	local s = Save.Get()
+	if not s or s.PickedStarterPet then
+		return false
+	end
+	if not Network or type(Network.Invoke) ~= "function" then
+		return false
+	end
+	AR.Pets.lastStarterPickTry = now
+	local pet1, pet2 = AR.Pets.pickStarterPetIds()
+	local res, err = AR.Net.invoke("Pick Starter Pets", pet1, pet2)
+	log("Pick Starter Pets", pet1, pet2, "res=", res, "err=", err)
+	if res ~= false and res ~= nil then
+		pcall(function()
+			if TabController and type(TabController.CloseTab) == "function" then
+				TabController.CloseTab()
+			end
+		end)
+		return true
+	end
+	return false
+end
+
+function AR.Pets.installForceDisableListener()
+	if AR.Pets.forceDisableListenerInstalled then
+		return
+	end
+	if not Network or type(Network.Fired) ~= "function" then
+		return
+	end
+	if cfg().petsAlwaysFarmListenForceDisable == false then
+		return
+	end
+	local sig = AR.Net.fired("AutoFarm_ForceDisable")
+	if not sig or not sig.Connect then
+		return
+	end
+	local conn = sig:Connect(function()
+		AR.Pets.pendingReenable = true
+		traceThrottled("pets_force_disable_recv", 4, "pets", "AutoFarm_ForceDisable получен — пометил pendingReenable")
+	end)
+	autoRankRegisterTaggedConn("pets_autofarm_force_disable", conn)
+	AR.Pets.forceDisableListenerInstalled = true
+end
+
+function AR.Pets.requestPivotToFarm()
+	if AutoRankRuntimeState and type(AutoRankRuntimeState.tryPivotToBreakableFarmCenter) == "function" then
+		pcall(AutoRankRuntimeState.tryPivotToBreakableFarmCenter, false)
+	end
+end
+
+function AR.Pets.tryEnableAutoFarmIfInBox()
+	if not (AutoFarmCmds and type(AutoFarmCmds.Enable) == "function") then
+		return
+	end
+	if not safeInDottedBox() then
+		return false
+	end
+	pcall(function() AutoFarmCmds.Enable() end)
+	AR.Pets.pendingReenable = false
+	traceThrottled("pets_autofarm_enabled", 4, "pets", "AutoFarmCmds.Enable() — петы заякорены")
+	return true
+end
+
+function AR.Pets.tick()
+	if cfg().petsAlwaysFarmEnabled ~= true then
+		return
+	end
+	if not AutoFarmCmds or type(AutoFarmCmds.Enable) ~= "function" then
+		return
+	end
+	if not ZoneCmds or type(ZoneCmds.GetMaxOwnedZone) ~= "function" then
+		return
+	end
+	AR.Pets.installForceDisableListener()
+	local now = tick()
+	local iv = tonumber(cfg().petsAlwaysFarmTickInterval) or 1.0
+	if now - (AR.Pets.lastEnableTry or 0) < iv and not AR.Pets.pendingReenable then
+		return
+	end
+	AR.Pets.lastEnableTry = now
+	local maxOwnedId = nil
+	pcall(function() maxOwnedId = select(1, ZoneCmds.GetMaxOwnedZone()) end)
+	if type(maxOwnedId) ~= "string" then
+		return
+	end
+	AR.Pets.targetZone = maxOwnedId
+	local enabled = false
+	pcall(function() enabled = AutoFarmCmds.IsEnabled() == true end)
+	local curParentId = nil
+	if enabled and type(AutoFarmCmds.GetTargetParentId) == "function" then
+		pcall(function() curParentId = AutoFarmCmds.GetTargetParentId() end)
+	end
+	if enabled and curParentId == maxOwnedId and not AR.Pets.pendingReenable then
+		return
+	end
+	AR.Pets.requestPivotToFarm()
+	if AR.Pets.tryEnableAutoFarmIfInBox() then
+		return
+	end
+	if AR.Pets.pendingEnableSpawn then
+		return
+	end
+	AR.Pets.pendingEnableSpawn = true
+	task.spawn(function()
+		local deadline = tick() + 1.5
+		while tick() < deadline do
+			task.wait(0.1)
+			if safeInDottedBox() then
+				AR.Pets.tryEnableAutoFarmIfInBox()
+				break
+			end
+		end
+		AR.Pets.pendingEnableSpawn = false
+	end)
+end
+
+function AR.Reward.hasAccess()
+	if not Save or type(Save.Get) ~= "function" then
+		return false
+	end
+	local s = Save.Get()
+	if not s then
+		return false
+	end
+	if (tonumber(s.Rebirths) or 0) >= 1 then
+		return true
+	end
+	if not (ZoneCmds and ZoneCmds.GetMaxOwnedZone and Balancing and Balancing.Constants) then
+		return false
+	end
+	local minZone = tonumber(Balancing.Constants.MinimumZoneFreeGifts) or 9
+	local _, zoneData = nil, nil
+	pcall(function() _, zoneData = ZoneCmds.GetMaxOwnedZone() end)
+	if zoneData and tonumber(zoneData.ZoneNumber) and tonumber(zoneData.ZoneNumber) >= minZone then
+		return true
+	end
+	return false
+end
+
+function AR.Reward.fflagAllows()
+	if not FFlags then
+		return true
+	end
+	local ok = false
+	pcall(function()
+		if type(FFlags.CanBypass) == "function" and FFlags.CanBypass() then
+			ok = true
+			return
+		end
+		if type(FFlags.Get) == "function" and FFlags.Keys and FFlags.Keys.FreeGifts then
+			ok = FFlags.Get(FFlags.Keys.FreeGifts) == true
+		else
+			ok = true
+		end
+	end)
+	return ok
+end
+
+function AR.Reward.searchArray(arr, val)
+	if type(arr) ~= "table" then
+		return false
+	end
+	for _, v in ipairs(arr) do
+		if v == val then
+			return true
+		end
+	end
+	return false
+end
+
+function AR.Reward.claimFreeGift(id)
+	local res, err = AR.Net.invoke("Redeem Free Gift", id)
+	log("Redeem Free Gift id=", id, "res=", res, "err=", err)
+	return res ~= false and res ~= nil
+end
+
+function AR.Reward.tick()
+	if cfg().autoRedeemFreeGifts ~= true then
+		return
+	end
+	if not Save or not Directory then
+		return
+	end
+	local now = tick()
+	local iv = tonumber(cfg().freeGiftsCheckInterval) or 30
+	if now - (Ticks.lastFreeGiftsTick or 0) < iv then
+		return
+	end
+	Ticks.lastFreeGiftsTick = now
+	if not AR.Reward.hasAccess() then
+		return
+	end
+	if not AR.Reward.fflagAllows() then
+		traceThrottled("reward_fflag_blocked", 60, "reward", "FFlags.FreeGifts выключен — skip")
+		return
+	end
+	local s = Save.Get()
+	local dir = Directory.FreeGifts
+	if not s or type(dir) ~= "table" then
+		return
+	end
+	local redeemed = s.FreeGiftsRedeemed or {}
+	local timeAcc = tonumber(s.FreeGiftsTime) or 0
+	local claimed = 0
+	local maxClaims = math.max(1, tonumber(cfg().freeGiftsMaxClaimsPerTick) or 12)
+	for idx, entry in ipairs(dir) do
+		if type(entry) == "table" then
+			local waitTime = tonumber(entry.WaitTime) or math.huge
+			local giftId = entry.Id or idx
+			if
+				timeAcc >= waitTime
+				and not AR.Reward.searchArray(redeemed, idx)
+				and not AR.Reward.searchArray(redeemed, giftId)
+				and not freeGiftClaimedLocal[giftId]
+				and not freeGiftClaimedLocal[idx]
+			then
+				if AR.Reward.claimFreeGift(giftId) then
+					claimed += 1
+					freeGiftClaimedLocal[giftId] = true
+					freeGiftClaimedLocal[idx] = true
+				end
+				if claimed >= maxClaims then
+					return
+				end
+			end
+		end
+	end
+end
+
+function AR.Lootbox.itemAmount(data)
+	if type(data) ~= "table" then
+		return 0
+	end
+	return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+end
+
+function AR.Lootbox.tick()
+	if cfg().autoOpenInstantLootboxes ~= true and cfg().autoOpenNonInstantLootboxes ~= true then
+		return
+	end
+	if not Save or not Directory then
+		return
+	end
+	local now = tick()
+	local iv = tonumber(cfg().lootboxOpenInterval) or 1.5
+	if now - (Ticks.lastLootboxTick or 0) < iv then
+		return
+	end
+	Ticks.lastLootboxTick = now
+	local s = Save.Get()
+	local dir = Directory.Lootboxes
+	if not s or type(s.Inventory) ~= "table" or type(s.Inventory.Lootbox) ~= "table" or type(dir) ~= "table" then
+		return
+	end
+	local batch = math.max(1, tonumber(cfg().lootboxBatchAmount) or 25)
+	for uid, data in pairs(s.Inventory.Lootbox) do
+		if type(uid) == "string" and type(data) == "table" then
+			local id = data.id
+			local d = id and dir[id]
+			if type(d) == "table" then
+				local amt = AR.Lootbox.itemAmount(data)
+				if amt >= 1 then
+					local takeAmt = math.min(batch, amt)
+					if d.Instant == true and not d.IsCardPack and cfg().autoOpenInstantLootboxes == true then
+						local res, err = AR.Net.invoke("Lootbox: Open", uid, takeAmt, nil)
+						log("Lootbox: Open instant uid=", uid, "id=", id, "amt=", takeAmt, "res=", res, "err=", err)
+						return
+					elseif (not d.Instant) and cfg().autoOpenNonInstantLootboxes == true then
+						local res, err = AR.Net.invoke("Lootbox: Open", uid, 1, nil)
+						if res == false then
+							traceThrottled("lootbox_noplace_" .. tostring(id), 30, "lootbox",
+								"non-Instant lootbox требует место в мире — silent skip", id)
+						else
+							log("Lootbox: Open placed uid=", uid, "id=", id, "res=", res, "err=", err)
+						end
+						return
+					end
+				end
+			end
+		end
+	end
+end
+
+function AR.Cons.inventoryAmountByDirId(invField, dirId)
+	if not (Save and type(Save.Get) == "function") then
+		return 0
+	end
+	local s = Save.Get()
+	if not s or type(s.Inventory) ~= "table" then
+		return 0
+	end
+	local inv = s.Inventory[invField]
+	if type(inv) ~= "table" then
+		return 0
+	end
+	local total = 0
+	for _, data in pairs(inv) do
+		if type(data) == "table" and data.id == dirId then
+			total = total + (tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1)
+		end
+	end
+	return total
+end
+
+function AR.Cons.debug(...)
+	if cfg().consumeDebugLog ~= false then
+		traceThrottled("cons_dbg_" .. tostring(select(1, ...)) .. "_" .. tostring(select(2, ...)), 2, "cons", ...)
+	end
+end
+
+function AR.Cons.idCandidates(id)
+	local out = {}
+	local seen = {}
+	local function add(v)
+		if type(v) == "string" and v ~= "" and not seen[v] then
+			out[#out + 1] = v
+			seen[v] = true
+		end
+	end
+	add(id)
+	if type(id) == "string" then
+		add((string.gsub(id, "%s+", "")))
+		add((string.gsub(id, "Flag$", " Flag")))
+		if id == "Basic Sprinkler" then
+			add("Breakable Sprinkler")
+			add("SprinklerBasic")
+			add("BasicSprinkler")
+		elseif id == "SprinklerBasic" or id == "BasicSprinkler" or id == "Breakable Sprinkler" then
+			add("Breakable Sprinkler")
+			add("Basic Sprinkler")
+		end
+	end
+	return out
+end
+
+function AR.Cons.inventoryAmountAny(invFields, ids)
+	local best = 0
+	for _, field in ipairs(invFields) do
+		for _, id in ipairs(ids) do
+			best = math.max(best, AR.Cons.inventoryAmountByDirId(field, id))
+		end
+	end
+	return best
+end
+
+function AR.Cons.inventoryCandidatesAny(invFields, ids)
+	local out = {}
+	if not (Save and type(Save.Get) == "function") then
+		return out
+	end
+	local s = Save.Get()
+	if not s or type(s.Inventory) ~= "table" then
+		return out
+	end
+	for _, field in ipairs(invFields) do
+		local inv = s.Inventory[field]
+		if type(inv) == "table" then
+			for uid, data in pairs(inv) do
+				if type(uid) == "string" and type(data) == "table" then
+					for _, id in ipairs(ids) do
+						if data.id == id then
+							local amount = tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+							table.insert(out, { uid = uid, id = id, amount = amount, field = field })
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.amount ~= b.amount then
+			return a.amount > b.amount
+		end
+		return tostring(a.uid) < tostring(b.uid)
+	end)
+	return out
+end
+
+function AR.Cons.getCurrentZoneId()
+	return safeCurrentZone()
+end
+
+function AR.Cons.conditionMet(cond)
+	if cond == "alwaysOn" then
+		return true
+	end
+	if cond == "inDottedBox" then
+		return safeInDottedBox()
+	end
+	if cond == "hatchSession" then
+		local dq = AutoRankRuntimeState and AutoRankRuntimeState.diagQuest
+		if dq and type(dq.snippet) == "string" and string.find(string.lower(dq.snippet), "hatch", 1, true) then
+			return true
+		end
+		return hatchBusy == true
+	end
+	if cond == "eggHatch" then
+		if Variables and Variables.OpeningEgg == true then
+			return true
+		end
+		return hatchBusy == true
+	end
+	return false
+end
+
+function AR.Cons.tryConsumeFlag(name, flagId, reserve)
+	if not (FlexibleFlagCmds and type(FlexibleFlagCmds.Consume) == "function") then
+		AR.Cons.debug("flag", name, "skip: FlexibleFlagCmds missing")
+		return false
+	end
+	local ids = AR.Cons.idCandidates(flagId)
+	for _, cid in ipairs(ids) do
+		local failKey = "flag:" .. tostring(cid)
+		if (AR.Cons.failUntil[failKey] or 0) > tick() then
+			AR.Cons.debug("flag", name, "skip: failure cooldown", cid)
+			continue
+		end
+		local active = false
+		if type(FlexibleFlagCmds.PlayerHasActiveFlag) == "function" then
+			pcall(function() active = FlexibleFlagCmds.PlayerHasActiveFlag(cid) == true end)
+		end
+		if active then
+			AR.Cons.debug("flag", name, "skip: already active", cid)
+			continue
+		end
+		local maxPlace = 1
+		if type(FlexibleFlagCmds.GetMaxPlaceAutomaticContext) == "function" then
+			pcall(function()
+				maxPlace = tonumber(FlexibleFlagCmds.GetMaxPlaceAutomaticContext(cid)) or 0
+			end)
+		end
+		if maxPlace <= 0 then
+			AR.Cons.debug("flag", name, "skip: no place slots", cid)
+			continue
+		end
+		local candidates = AR.Cons.inventoryCandidatesAny({ "Flag", "ZoneFlag", "FlexibleFlag", "Misc" }, { cid })
+		local stack = 0
+		for _, c in ipairs(candidates) do
+			stack += c.amount
+		end
+		if stack > 0 and stack <= (tonumber(reserve) or 0) then
+			AR.Cons.debug("flag", name, "skip: reserve", cid, "stack=", stack, "reserve=", reserve)
+			continue
+		end
+		local best = candidates[1]
+		if not best then
+			AR.Cons.debug("flag", name, "skip: no local stack", cid)
+			continue
+		end
+		local take = 1
+		local res, err = pcall(function()
+			return FlexibleFlagCmds.Consume(cid, best.uid, take)
+		end)
+		local okRes = res and err ~= false and err ~= nil
+		log("Cons flag", name, cid, "uid=", best.uid, "take=", take, "stack=", stack, "res=", err, "pcall=", res)
+		AR.Cons.debug("flag", name, "consume", cid, "uid=", best.uid, "take=", take, "stack=", stack, "res=", err)
+		if not okRes then
+			AR.Cons.failUntil[failKey] = tick() + (tonumber(cfg().consumeFailureCooldown) or 8)
+		end
+		return true
+	end
+	return false
+end
+
+function AR.Cons.tryConsumeSprinkler(name, sprinklerId, reserve)
+	if not (AR.Cons.SprinklerCmds and type(AR.Cons.SprinklerCmds.Consume) == "function") then
+		AR.Cons.debug("sprinkler", name, "skip: SprinklerCmds missing")
+		return false
+	end
+	local zid = AR.Cons.getCurrentZoneId()
+	if not zid then
+		AR.Cons.debug("sprinkler", name, "skip: no current zone")
+		return false
+	end
+	local ids = AR.Cons.idCandidates(sprinklerId)
+	for _, sid in ipairs(ids) do
+		local failKey = "sprinkler:" .. tostring(sid) .. ":" .. tostring(zid)
+		if (AR.Cons.failUntil[failKey] or 0) > tick() then
+			AR.Cons.debug("sprinkler", name, "skip: failure cooldown", sid, "zone=", zid)
+			continue
+		end
+		local active = false
+		if type(AR.Cons.SprinklerCmds.PlayerHasActiveSprinkler) == "function" then
+			pcall(function() active = AR.Cons.SprinklerCmds.PlayerHasActiveSprinkler(sid) == true end)
+		end
+		if active then
+			AR.Cons.debug("sprinkler", name, "skip: already active", sid, "zone=", zid)
+			continue
+		end
+		local maxPlace = 1
+		if type(AR.Cons.SprinklerCmds.GetMaxPlace) == "function" then
+			pcall(function()
+				maxPlace = tonumber(AR.Cons.SprinklerCmds.GetMaxPlace(sid, zid)) or 0
+			end)
+		end
+		if maxPlace <= 0 then
+			AR.Cons.debug("sprinkler", name, "skip: no place slots", sid, "zone=", zid)
+			continue
+		end
+		local candidates = AR.Cons.inventoryCandidatesAny({ "Sprinkler", "Misc", "Consumable" }, { sid })
+		local stack = 0
+		for _, c in ipairs(candidates) do
+			stack += c.amount
+		end
+		if stack > 0 and stack <= (tonumber(reserve) or 0) then
+			AR.Cons.debug("sprinkler", name, "skip: reserve", sid, "stack=", stack, "reserve=", reserve)
+			continue
+		end
+		local best = candidates[1]
+		if not best then
+			AR.Cons.debug("sprinkler", name, "skip: no local stack", sid)
+			continue
+		end
+		local take = math.min(best.amount, math.max(1, maxPlace), math.max(1, stack - (tonumber(reserve) or 0)))
+		local res, err = pcall(function()
+			return AR.Cons.SprinklerCmds.Consume(sid, best.uid, take)
+		end)
+		local okRes = res and err ~= false and err ~= nil
+		log("Cons sprinkler", name, sid, "uid=", best.uid, "take=", take, "zone=", zid, "stack=", stack, "res=", err, "pcall=", res)
+		AR.Cons.debug("sprinkler", name, "consume", sid, "uid=", best.uid, "take=", take, "zone=", zid, "stack=", stack, "res=", err)
+		if not okRes then
+			AR.Cons.failUntil[failKey] = tick() + (tonumber(cfg().consumeFailureCooldown) or 8)
+		end
+		return true
+	end
+	return false
+end
+
+function AR.Cons.tryConsumePotion(name, potionId, reserve)
+	if not (PotionCmds and type(PotionCmds.Consume) == "function") then
+		return false
+	end
+	if not Save then
+		return false
+	end
+	local s = Save.Get()
+	if not s or not s.Inventory or not s.Inventory.Potion then
+		return false
+	end
+	local candidates = {}
+	for uid, data in pairs(s.Inventory.Potion) do
+		if type(uid) == "string" and type(data) == "table" and data.id == potionId then
+			local tier = tonumber(data.tn) or 1
+			local tierOk = true
+			if MasteryCmds and MasteryCmds.CanUsePotion then
+				pcall(function()
+					tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
+				end)
+			end
+			if tierOk then
+				table.insert(candidates, { uid = uid, tier = tier })
+			end
+		end
+	end
+	if #candidates == 0 then
+		return false
+	end
+	local stack = AR.Cons.inventoryAmountByDirId("Potion", potionId)
+	if stack <= (tonumber(reserve) or 0) then
+		return false
+	end
+	table.sort(candidates, function(a, b)
+		if a.tier ~= b.tier then
+			return a.tier > b.tier
+		end
+		return tostring(a.uid) < tostring(b.uid)
+	end)
+	local best = candidates[1]
+	local ok, err = pcall(function()
+		PotionCmds.Consume(best.uid, 1)
+	end)
+	log("Cons potion", name, potionId, "uid=", best.uid, "stack=", stack, "tier=", best.tier, ok, err)
+	return ok
+end
+
+AR.Cons.SprinklerCmds = nil
+AR.Cons.failUntil = AR.Cons.failUntil or {}
+function AR.Cons.ensureSprinklerCmds()
+	if AR.Cons.SprinklerCmds ~= nil then
+		return AR.Cons.SprinklerCmds
+	end
+	local Client = ClientFolder
+	if not Client then
+		return nil
+	end
+	pcall(function()
+		local m = Client:FindFirstChild("SprinklerCmds")
+		if m then
+			AR.Cons.SprinklerCmds = cacheReq(m)
+		end
+	end)
+	return AR.Cons.SprinklerCmds
+end
+
+function AR.Cons.tick()
+	if cfg().autoConsumeEnabled ~= true then
+		return
+	end
+	if ARQ.buffConsumablesInstanceBlocked() then
+		return
+	end
+	local now = tick()
+	local iv = tonumber(cfg().consumablesTickInterval) or 4
+	if now - (Ticks.lastConsTick or 0) < iv then
+		return
+	end
+	Ticks.lastConsTick = now
+	if now - (Ticks.lastConsFailPruneTick or 0) > math.max(30, (tonumber(cfg().consumeFailureCooldown) or 8) * 4) then
+		Ticks.lastConsFailPruneTick = now
+		for key, untilAt in pairs(AR.Cons.failUntil or {}) do
+			if type(untilAt) ~= "number" or untilAt <= now then
+				AR.Cons.failUntil[key] = nil
+			end
+		end
+	end
+	AR.Cons.ensureSprinklerCmds()
+	local PRIO = {
+		{ fn="flag",      name="Hasty",       prio=10, cond="inDottedBox",
+			toggleCfgKey="consumeFlagsHasty",      reserveCfgKey="consumeReserveHasty",      idCfgKey="consumeFlagIdHasty" },
+		{ fn="flag",      name="Strength",    prio=10, cond="inDottedBox",
+			toggleCfgKey="consumeFlagsStrength",   reserveCfgKey="consumeReserveStrength",   idCfgKey="consumeFlagIdStrength" },
+		{ fn="flag",      name="Magnet",      prio=8,  cond="inDottedBox",
+			toggleCfgKey="consumeFlagsMagnet",     reserveCfgKey="consumeReserveMagnet",     idCfgKey="consumeFlagIdMagnet" },
+		{ fn="sprinkler", name="Sprinkler",   prio=7,  cond="inDottedBox",
+			toggleCfgKey="consumeSprinklers",      reserveCfgKey="consumeReserveSprinkler",  idCfgKey="consumeSprinklerId" },
+		{ fn="potion",    name="DamagePotion",prio=6,  cond="alwaysOn",
+			toggleCfgKey="consumeDamagePotion",    reserveCfgKey="consumeReserveDamagePotion", idCfgKey="consumePotionIdDamage" },
+		{ fn="potion",    name="Rainbow",     prio=4,  cond="hatchSession",
+			toggleCfgKey="consumeRainbow",         reserveCfgKey="consumeReserveRainbow",    idCfgKey="consumePotionIdRainbow" },
+		{ fn="potion",    name="Shiny",       prio=4,  cond="hatchSession",
+			toggleCfgKey="consumeShiny",           reserveCfgKey="consumeReserveShiny",      idCfgKey="consumePotionIdShiny" },
+		{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
+			toggleCfgKey="consumeHugeHunter",      reserveCfgKey="consumeReserveHugeHunter", idCfgKey="consumePotionIdHugeHunter" },
+	}
+	for _, e in ipairs(PRIO) do
+		local cfg_t = cfg()
+		if cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
+			local id = cfg_t[e.idCfgKey]
+			local reserve = cfg_t[e.reserveCfgKey] or 0
+			if type(id) == "string" then
+				local consumed = false
+				if e.fn == "flag" then
+					consumed = AR.Cons.tryConsumeFlag(e.name, id, reserve)
+				elseif e.fn == "sprinkler" then
+					consumed = AR.Cons.tryConsumeSprinkler(e.name, id, reserve)
+				elseif e.fn == "potion" then
+					consumed = AR.Cons.tryConsumePotion(e.name, id, reserve)
+				end
+				if consumed then
+					return
+				end
+			end
+		end
+	end
+end
+
+function AR.HB.dispatch()
+	if cfg().hbSchedulerEnabled == false then
+		return AutoRankRuntimeState.autoRankHeartbeatWorkLegacy()
+	end
+	local cfg_t = cfg()
+	local now = tick()
+	local hbTicks = Ticks.hb
+	local tasks = AR.HB.tasks
+	if not tasks then
+		return
+	end
+	for i = 1, #tasks do
+		local t = tasks[i]
+		local lastT = hbTicks[t.tag] or 0
+		local iv = t.interval or 0
+		if type(iv) == "string" then
+			iv = tonumber(cfg_t[iv]) or 0
+		elseif type(iv) == "function" then
+			iv = tonumber(iv(cfg_t)) or 0
+		end
+		if iv == 0 or now - lastT >= iv then
+			if t.gate and not t.gate() then
+			else
+				hbTicks[t.tag] = now
+				local ok, err = pcall(t.fn, cfg_t)
+				if not ok then
+					traceThrottled("hb_err_" .. t.tag, 5, "hb", "task", t.tag, "err", err)
+				end
+			end
+		end
+	end
+end
+
+function AutoRankRuntimeState.autoRankHeartbeatWorkLegacy()
 	pcall(ensureModulesOnHeartbeat)
-	tryDismissRebirthUi()
-	tryAutoClickMessageDialogYes()
+	ARUI.tryDismissRebirthUi()
+	ARUI.tryDismissRankUpUi()
+	ARUI.tryDismissMasteryPerkUi()
+	AutoRankRuntimeState.tryAutoClickMessageDialogYes()
 	tryInstallNetworkInvokeDebugHook()
 	tryInstallKickGuard()
 	patchOrbMagnet()
 	hookOrbNetwork()
 	AutoRankRuntimeState.tutorialTick()
+	AR.Pets.tryPickStarterPets()
 	AutoRankRuntimeState.tryClaimRankRewards()
 	AutoRankRuntimeState.tryRankUpViaGui()
-	tryAutoBuyInstanceZone()
-	tryAutoBuyMainZone()
+	ARZone.tryAutoBuyInstanceZone()
+	ARZone.tryAutoBuyMainZone()
 	tryAutoBuyEggSlots()
 	tryAutoBuyEquipSlots()
 	tryAutoBuyCheapestUpgrade()
-	tryAutoBuffConsumablesPulse()
-	tryAutoDaycare()
 	AutoRankRuntimeState.tryMinigameAssistPulse()
 	local trackedQuest, isHatching = nil, false
 	local qaOk, qaErr = pcall(function()
@@ -4782,14 +7774,88 @@ function AutoRankRuntimeState.autoRankHeartbeatWork()
 	if not qaOk then
 		warnErr("runQuestAssistPulse", qaErr)
 	end
-	tryClickEggOpeningPrompt()
+	AR.Cons.tryAutoBuffConsumablesPulseLegacy()
+	tryAutoDaycare()
+	pcall(function()
+		ARQ.tryQuestEquipEnchantFromInventory(isHatching == true or hatchBusy == true)
+	end)
+	ARUI.tryClickEggOpeningPrompt()
 	AutoRankRuntimeState.tryAutoEquipBestPets()
-	tryClickReturnToMaxAreaButton()
+	ARUI.tryClickReturnToMaxAreaButton()
 	AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedQuest, isHatching)
 	AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
+	AutoRankRuntimeState.tryAutoEnableAutoFarm()
 	AutoRankRuntimeState.farmTick()
 	tryCollectOrbs()
+	AR.UI.tryDisableBuiltInAutoTapper()
+	AR.Pets.tick()
+	AR.Reward.tick()
+	AR.Lootbox.tick()
+	AR.Cons.tick()
 	return trackedQuest, isHatching
+end
+
+AR.HB.state = { trackedQuest = nil, isHatching = false }
+
+AR.HB.tasks = {
+	{ tag = "ensureModules", interval = "hbIntervalEnsureModules", fn = function() pcall(ensureModulesOnHeartbeat) end },
+	{ tag = "dismissRebirth", interval = "hbIntervalDismissUI", fn = function() ARUI.tryDismissRebirthUi() end,
+		gate = function() return Variables and Variables.IsRebirthing == true end },
+	{ tag = "dismissRankUp", interval = "hbIntervalDismissUI", fn = function() ARUI.tryDismissRankUpUi() end,
+		gate = function() return Variables and Variables.IsRankingUp == true end },
+	{ tag = "dismissMasteryPerk", interval = "hbIntervalDismissUI", fn = function() ARUI.tryDismissMasteryPerkUi() end },
+	{ tag = "msgDialogYes", interval = 0.5, fn = function() AutoRankRuntimeState.tryAutoClickMessageDialogYes() end },
+	{ tag = "netDebugHook", interval = 1.0, fn = function() tryInstallNetworkInvokeDebugHook() end },
+	{ tag = "kickGuard", interval = 1.0, fn = function() tryInstallKickGuard() end },
+	{ tag = "orbMagnet", interval = 0.5, fn = function() patchOrbMagnet() end },
+	{ tag = "orbNetHook", interval = 0.5, fn = function() hookOrbNetwork() end },
+	{ tag = "tutorial", interval = 1.0, fn = function() AutoRankRuntimeState.tutorialTick() end },
+	{ tag = "starterPets", interval = "autoPickStarterPetsInterval", fn = function() AR.Pets.tryPickStarterPets() end },
+	{ tag = "claimRanks", interval = 0.35, fn = function() AutoRankRuntimeState.tryClaimRankRewards() end },
+	{ tag = "rankUpGui", interval = 0.5, fn = function() AutoRankRuntimeState.tryRankUpViaGui() end },
+	{ tag = "buyInstanceZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyInstanceZone() end },
+	{ tag = "buyMainZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyMainZone() end },
+	{ tag = "buyEggSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEggSlots() end },
+	{ tag = "buyEquipSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEquipSlots() end },
+	{ tag = "buyUpgrade", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyCheapestUpgrade() end },
+	{ tag = "minigame", interval = "hbIntervalQuestAssist", fn = function() AutoRankRuntimeState.tryMinigameAssistPulse() end },
+	{ tag = "questAssist", interval = "hbIntervalQuestAssist", fn = function()
+		local qaOk, qaErr = pcall(function()
+			AR.HB.state.trackedQuest, AR.HB.state.isHatching = AutoRankRuntimeState.runQuestAssistPulse()
+		end)
+		if not qaOk then
+			warnErr("runQuestAssistPulse", qaErr)
+		end
+	end },
+	{ tag = "consumablesLegacy", interval = "hbIntervalConsumables", fn = function() AR.Cons.tryAutoBuffConsumablesPulseLegacy() end },
+	{ tag = "daycare", interval = 1.0, fn = function() tryAutoDaycare() end },
+	{ tag = "questEnchant", interval = "hbIntervalEquipPets", fn = function()
+		pcall(function()
+			ARQ.tryQuestEquipEnchantFromInventory(AR.HB.state.isHatching == true or hatchBusy == true)
+		end)
+	end },
+	{ tag = "eggOpeningPrompt", interval = 0.32, fn = function() ARUI.tryClickEggOpeningPrompt() end },
+	{ tag = "equipPets", interval = "hbIntervalEquipPets", fn = function() AutoRankRuntimeState.tryAutoEquipBestPets() end },
+	{ tag = "returnToArea", interval = 1.0, fn = function() ARUI.tryClickReturnToMaxAreaButton() end },
+	{ tag = "teleportMaxFarm", interval = 0.5, fn = function()
+		AutoRankRuntimeState.tryTeleportToMaxFarmZone(AR.HB.state.trackedQuest, AR.HB.state.isHatching)
+	end },
+	{ tag = "pivotFarmCenter", interval = 0.5, fn = function()
+		AutoRankRuntimeState.tryPivotToBreakableFarmCenter(AR.HB.state.isHatching)
+	end },
+	{ tag = "autoFarmEnable", interval = "hbIntervalAutoFarmEnable", fn = function() AutoRankRuntimeState.tryAutoEnableAutoFarm() end },
+	{ tag = "petsAlwaysFarm", interval = 0, fn = function() AR.Pets.tick() end },
+	{ tag = "farmTick", interval = "hbIntervalDealDamage", fn = function() AutoRankRuntimeState.farmTick() end },
+	{ tag = "orbCollect", interval = 0.35, fn = function() tryCollectOrbs() end },
+	{ tag = "tapperOff", interval = 2.0, fn = function() AR.UI.tryDisableBuiltInAutoTapper() end },
+	{ tag = "freeGifts", interval = "hbIntervalFreeRewards", fn = function() AR.Reward.tick() end },
+	{ tag = "lootbox", interval = "hbIntervalLootbox", fn = function() AR.Lootbox.tick() end },
+	{ tag = "cons", interval = "hbIntervalConsumables", fn = function() AR.Cons.tick() end },
+}
+
+function AutoRankRuntimeState.autoRankHeartbeatWork()
+	AR.HB.dispatch()
+	return AR.HB.state.trackedQuest, AR.HB.state.isHatching
 end
 
 task.defer(function()
@@ -4808,9 +7874,11 @@ AutoRankRuntimeState.heartbeatConn = RunService.Heartbeat:Connect(function()
 		warnErr("heartbeat", hbErr)
 	end
 	local now = tick()
-	if cfg().verboseLog and now - lastVerbosePulseTick >= (cfg().traceInterval or 4) then
-		lastVerbosePulseTick = now
+	if cfg().verboseLog and now - Ticks.lastVerbosePulseTick >= (cfg().traceInterval or 4) then
+		Ticks.lastVerbosePulseTick = now
 		AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedQuest, isHatching)
 		AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 	end
 end)
+
+end
