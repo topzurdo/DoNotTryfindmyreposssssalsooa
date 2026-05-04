@@ -98,7 +98,7 @@ local DEFAULT = {
 	autoClickReturnToAreaButton = true,
 	returnToAreaClickInterval = 2,
 	crossPlaceAutoReload = true,
-	crossPlaceReloadUrl = "",
+	crossPlaceReloadUrl = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank.lua",
 	crossPlaceReloadReadfile = "",
 	crossPlaceReloadDelaySec = 3,
 	teleportToBreakableFarmCenter = true,
@@ -334,6 +334,8 @@ local DEFAULT = {
 	minigameWave2SearchDepth = 14,
 	minigameWave2MaxPromptsPerTick = 8,
 	autoHatchProgressWithoutQuest = true,
+	-- GoalCmds/FFlags nil (executor): без квестовой цели blind progress-hatch только мешает (зоны/ранги). true = старое поведение.
+	autoHatchProgressWhenGoalModulesMissing = false,
 	autoHatchProgressWhenNonEggQuest = true,
 	autoHatchProgressCooldown = 10,
 	questMachineGuiStuckMaxClicks = 22,
@@ -379,6 +381,15 @@ local DEFAULT = {
 	questTravelWorldDirectNetwork = true,
 	questTravelWorldDirectNetworkInterval = 2.6,
 	questTravelTechRequireRebirth4 = true,
+	-- Если после RequestTechRocket остаёмся в основном мире без IsTeleportingWorld2 — позже повторяем удалёнку + триггер ракеты Rainbow Road.
+	questTravelTechRetryEnabled = true,
+	questTravelTechRetryStuckAfterSec = 7,
+	questTravelTechRetryEverySec = 4.5,
+	questTravelTechRetryMaxAttempts = 12,
+	-- GoalCmds в экзекьюторе часто даёт no_goal без tracked — при уже max зоне W1 и Rainbow Road давим RequestTechRocket + ракету.
+	questTravelTechWhenNoGoalEnabled = true,
+	questTravelTechWhenNoGoalInterval = 10,
+	questTravelTechWhenNoGoalRequireRainbowRoad = true,
 	farmUseFireClickDetectorFallback = false,
 	debugLogInvokes = false,
 	kickGuardTryBlockClientKick = true,
@@ -596,7 +607,6 @@ local function warnErr(where, err)
 	local now = tick()
 	local key = tostring(where) .. ":" .. tostring(err)
 	if now - (warnThrottleAt[key] or 0) < 5 then
-		AR.Log.write("ERR_THROTTLED", where, err)
 		return
 	end
 	warnThrottleAt[key] = now
@@ -970,7 +980,7 @@ local function safeRequire(mod)
 	if ok and res ~= nil then
 		return res
 	end
-	return require(mod)
+	return nil
 end
 
 local function cacheReq(mod)
@@ -1091,6 +1101,12 @@ Ticks.lastZonePurchaseTick = 0
 Ticks.lastTeleportTick = 0
 Ticks.lastTravelWorldDirectNetworkTick = 0
 Ticks.lastTravelTechRebirthWarnTick = 0
+Ticks.lastRequestTechRocketTick = 0
+Ticks.travelTechStuck_anchorGen = nil
+Ticks.travelTechStuck_anchorStartTick = nil
+Ticks.lastTravelTechRetryTick = 0
+Ticks.travelTechRetryCountSession = 0
+Ticks.lastTravelTechNoGoalAssistTick = 0
 Ticks.lastReturnAreaGuiTick = 0
 Ticks.lastQuestPickTick = 0
 Ticks.lastQuestHatchTick = 0
@@ -3903,6 +3919,8 @@ function QuestAssist.tryKeywordCooldownReset(tracked)
 end
 
 local ARQ = {}
+-- GoalCmds no_goal: всё равно матчится isTravelToTech… + RequestTechRocket (синт имя без GUI).
+ARQ.SYNTH_GENERATOR_TRAVEL_TECH_NOGOAL = "##AutoRank_TravelTech_NoGoal##"
 
 function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 	if cfg().questSpawnInventoryBreakables == false then
@@ -4079,6 +4097,9 @@ function ARQ.getClosestProximityPrompt(maxDist)
 end
 
 function ARQ.isTravelToTechGeneratorName(genName)
+	if genName == ARQ.SYNTH_GENERATOR_TRAVEL_TECH_NOGOAL then
+		return true
+	end
 	local g = string.lower(genName or "")
 	return string.find(g, "travel to tech", 1, true) ~= nil
 		or string.find(g, "tech starter", 1, true) ~= nil
@@ -4120,7 +4141,8 @@ function ARQ.rainbowRoadRocketInteractPart()
 	return fallbackPart
 end
 
-function ARQ.tryTravelWorldDirectNetworkFire(genName)
+function ARQ.tryTravelWorldDirectNetworkFire(genName, opts)
+	opts = opts and type(opts) == "table" and opts or {}
 	if cfg().questTravelWorldDirectNetwork == false then
 		return false
 	end
@@ -4152,19 +4174,248 @@ function ARQ.tryTravelWorldDirectNetworkFire(genName)
 		end
 	end
 	local now = tick()
+	local gStable = genName and tostring(genName) or ""
+	if remoteName == "RequestTechRocket" then
+		if Ticks.travelTechStuck_anchorGen ~= gStable then
+			Ticks.travelTechStuck_anchorGen = gStable
+			Ticks.travelTechStuck_anchorStartTick = now
+			Ticks.travelTechRetryCountSession = 0
+		elseif (Ticks.travelTechStuck_anchorStartTick or 0) <= 0 then
+			Ticks.travelTechStuck_anchorStartTick = now
+		end
+	end
 	local iv = tonumber(cfg().questTravelWorldDirectNetworkInterval) or 2.6
-	if now - Ticks.lastTravelWorldDirectNetworkTick < iv then
+	if opts.forceThrottle ~= true and now - Ticks.lastTravelWorldDirectNetworkTick < iv then
 		return false
 	end
 	Ticks.lastTravelWorldDirectNetworkTick = now
 	AR.Net.fire(remoteName)
+	if remoteName == "RequestTechRocket" then
+		Ticks.lastRequestTechRocketTick = now
+	end
 	if cfg().log then
-		log("quest travel direct Network.Fire", remoteName, genName, "via AR.Net.fire")
+		log(
+			"quest travel direct Network.Fire",
+			remoteName,
+			genName,
+			opts.forceThrottle and "(retry burst)" or "via AR.Net.fire"
+		)
 	end
 	if cfg().verboseLog then
-		traceThrottled("travelDirectNet:" .. remoteName, iv + 0.1, "pulse.quest", "Network.Fire dispatched (AR.Net)", remoteName, genName)
+		local traceKey = "travelDirectNet:" .. remoteName .. (opts.forceThrottle == true and ":retry" or "")
+		local traceIv = (opts.forceThrottle == true) and 3.2 or (iv + 0.12)
+		traceThrottled(traceKey, traceIv, "pulse.quest", "Network.Fire", remoteName, genName)
 	end
 	return true
+end
+
+function ARQ.placeFileIsPastMainWorldForTech()
+	local pf = getPlaceFileModule()
+	if not pf or type(pf) ~= "table" then
+		return nil
+	end
+	if pf.IsWorld2 == true or pf.IsWorld3 == true or pf.IsWorld4 == true then
+		return true
+	end
+	local wn = pf.WorldNumber or pf.worldNumber or pf.World or pf.world
+	if type(wn) == "number" and wn >= 2 then
+		return true
+	end
+	return false
+end
+
+function ARQ.tryTravelToTechRocketPhysicalEngage(genName)
+	if not ARQ.isTravelToTechGeneratorName(genName) then
+		return false
+	end
+	local ch = LocalPlayer.Character
+	local pp = ch and ch.PrimaryPart
+	if not pp then
+		return false
+	end
+	local minD = cfg().questTeleportMinDist or 14
+	local yOff = cfg().questTeleportYOffset or 6
+	local ri = ARQ.rainbowRoadRocketInteractPart()
+	if ri then
+		local pos = ri:IsA("BasePart") and ri.Position
+			or (ri:IsA("Model") and ri.PrimaryPart and ri.PrimaryPart.Position)
+		if pos and cfg().questTeleportToTarget and (pp.Position - pos).Magnitude >= minD then
+			pcall(function()
+				pp.CFrame = CFrame.new(pos + Vector3.new(0, yOff, 0))
+			end)
+			log("TravelToTech retry pivot →", ri:GetFullName())
+		end
+		ARQ.tryQuestTargetExecutorExtras(ri, pp, genName)
+		return true
+	end
+	local bestPrompt = ARQ.getClosestProximityPrompt(150)
+	if bestPrompt then
+		local anchor = bestPrompt.Parent
+		local pos = anchor
+			and (
+				(anchor:IsA("BasePart") and anchor.Position)
+				or (anchor:IsA("Model") and anchor.PrimaryPart and anchor.PrimaryPart.Position)
+			)
+		if pos and cfg().questTeleportToTarget and (pp.Position - pos).Magnitude >= minD then
+			pcall(function()
+				pp.CFrame = CFrame.new(pos + Vector3.new(0, yOff, 0))
+			end)
+			log("TravelToTech retry pivoted to closest prompt →", anchor:GetFullName())
+		end
+		Exec.fireProximityPrompt(bestPrompt)
+		ARQ.tryTravelWorldDirectNetworkFire(genName, { forceThrottle = true })
+		return true
+	end
+	return false
+end
+
+function ARQ.tryTravelToTechStuckRetry(tracked)
+	if cfg().questTravelTechRetryEnabled ~= true then
+		return
+	end
+	if not tracked then
+		Ticks.travelTechStuck_anchorGen = nil
+		Ticks.travelTechStuck_anchorStartTick = nil
+		Ticks.travelTechRetryCountSession = 0
+		return
+	end
+	local genName = tracked._generatorName
+	if not ARQ.isTravelToTechGeneratorName(genName) then
+		Ticks.travelTechStuck_anchorGen = nil
+		Ticks.travelTechStuck_anchorStartTick = nil
+		Ticks.travelTechRetryCountSession = 0
+		return
+	end
+	if QuestAssist.shouldSkipObjectiveInteraction(tracked) then
+		return
+	end
+	local pastMain = ARQ.placeFileIsPastMainWorldForTech()
+	if pastMain == true then
+		Ticks.travelTechStuck_anchorGen = nil
+		Ticks.travelTechStuck_anchorStartTick = nil
+		Ticks.travelTechRetryCountSession = 0
+		return
+	end
+	local envBlocked, envDetail = ARZone.questObjectiveEnvironmentBlockedDetail()
+	if envBlocked and type(envDetail) == "string" then
+		if string.find(envDetail, "IsTeleportingWorld2", 1, true)
+			or string.find(envDetail, "IsRebirthing", 1, true)
+			or string.find(envDetail, "IsUsingCannon", 1, true)
+		then
+			return
+		end
+	end
+	local anchorStart = Ticks.travelTechStuck_anchorStartTick or 0
+	local maxA = tonumber(cfg().questTravelTechRetryMaxAttempts) or 12
+	if (Ticks.travelTechRetryCountSession or 0) >= maxA then
+		traceThrottled(
+			"travel_tech_retry_max",
+			26,
+			"quest",
+			"Travel Tech: лимит повторов",
+			maxA,
+			"(cfg questTravelTechRetryMaxAttempts)"
+		)
+		return
+	end
+	local now = tick()
+	local stuckAfter = tonumber(cfg().questTravelTechRetryStuckAfterSec) or 7
+	if anchorStart <= 0 or now - anchorStart < stuckAfter then
+		return
+	end
+	local retryEvery = tonumber(cfg().questTravelTechRetryEverySec) or 4.5
+	if now - (Ticks.lastTravelTechRetryTick or 0) < retryEvery then
+		return
+	end
+	Ticks.lastTravelTechRetryTick = now
+	Ticks.travelTechRetryCountSession = (Ticks.travelTechRetryCountSession or 0) + 1
+	traceThrottled(
+		"travel_tech_stuck_retry",
+		4.5,
+		"quest",
+		"Travel To Tech: повтор",
+		Ticks.travelTechRetryCountSession,
+		"/",
+		maxA,
+		"(RequestTechRocket + ракета)"
+	)
+	pcall(function()
+		ARQ.tryTravelWorldDirectNetworkFire(genName, { forceThrottle = true })
+	end)
+	pcall(function()
+		ARQ.tryTravelToTechRocketPhysicalEngage(genName)
+	end)
+end
+
+function ARQ.maybeAutoTravelToTechWhenNoGoal(tracked)
+	if cfg().questTravelTechWhenNoGoalEnabled ~= true then
+		return nil
+	end
+	if tracked ~= nil then
+		return nil
+	end
+	local dq = AutoRankRuntimeState.diagQuest or {}
+	if dq.where ~= "no_goal" then
+		return nil
+	end
+	local pastMain = ARQ.placeFileIsPastMainWorldForTech()
+	if pastMain == true then
+		return nil
+	end
+	local envBlocked, envDetail = ARZone.questObjectiveEnvironmentBlockedDetail()
+	if envBlocked and type(envDetail) == "string" then
+		if string.find(envDetail, "IsTeleportingWorld2", 1, true)
+			or string.find(envDetail, "IsRebirthing", 1, true)
+			or string.find(envDetail, "IsUsingCannon", 1, true)
+		then
+			return nil
+		end
+	end
+	local cur = safeCurrentZone()
+	local maxOw = nil
+	if ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+		pcall(function()
+			maxOw = select(1, ZoneCmds.GetMaxOwnedZone())
+		end)
+	end
+	if type(cur) ~= "string" or type(maxOw) ~= "string" or not AR.zonesIdMatch(cur, maxOw) then
+		return nil
+	end
+	if cfg().questTravelTechWhenNoGoalRequireRainbowRoad ~= false then
+		local lz = string.lower(cur)
+		if string.find(lz, "rainbow", 1, true) == nil then
+			return nil
+		end
+	end
+	local phantom = { _generatorName = ARQ.SYNTH_GENERATOR_TRAVEL_TECH_NOGOAL }
+	if QuestAssist.shouldSkipObjectiveInteraction(phantom) then
+		return nil
+	end
+	local now = tick()
+	local iv = tonumber(cfg().questTravelTechWhenNoGoalInterval) or 10
+	if iv < 3 then
+		iv = 3
+	end
+	if now - (Ticks.lastTravelTechNoGoalAssistTick or 0) >= iv then
+		Ticks.lastTravelTechNoGoalAssistTick = now
+		traceThrottled(
+			"travel_tech_nogoal_pulse",
+			iv * 0.85,
+			"quest",
+			"no_goal: Travel To Tech (max зона, PlaceFile≠W2+)",
+			cur
+		)
+		if cfg().log then
+			log("Travel To Tech assist (GoalCmds no_goal)", cur, "interval", iv)
+		end
+		pcall(function()
+			ARQ.tryTravelWorldDirectNetworkFire(phantom._generatorName, { forceThrottle = true })
+		end)
+		pcall(function()
+			ARQ.tryTravelToTechRocketPhysicalEngage(phantom._generatorName)
+		end)
+	end
+	return phantom
 end
 
 function ARQ.tryQuestTargetExecutorExtras(inst, pp, genName)
@@ -5625,9 +5876,18 @@ AR.ARC = (function()
 			return explicit, true
 		end
 		if cfg().preferZoneEggWhenProgress and MapCmds then
-			local cur = safeCurrentZone()
-			if cur then
-				local zn = HatchAssist.pickHighestEggInPhysicalZone(cur, tracked)
+			local zoneId = safeCurrentZone()
+			-- При progress hatch (tracked=nil) ориентироваться на max owned — иначе лаг MapCmds оставляет в старой зоне и крутим чужое яйцо.
+			if tracked == nil and ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+				local okz, mz = pcall(function()
+					return select(1, ZoneCmds.GetMaxOwnedZone())
+				end)
+				if okz and type(mz) == "string" and mz ~= "" then
+					zoneId = mz
+				end
+			end
+			if zoneId then
+				local zn = HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
 				if zn > 0 then
 					return zn, false
 				end
@@ -6446,6 +6706,9 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		if not qaOk then
 			warnErr("quest_resolve_targets", qaErr)
 		end
+		pcall(function()
+			ARQ.tryTravelToTechStuckRetry(tracked)
+		end)
 		local hhOk, hhErr = pcall(function()
 			isHatching = AR.ARC.tryQuestEggHatchAssist(tracked) == true or hatchBusy == true
 		end)
@@ -6465,10 +6728,22 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		local allowNonEggProgress = tracked
 			and cfg().autoHatchProgressWhenNonEggQuest ~= false
 			and not eggRelated
-		local wantProgress = not tracked
-			or (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
-			or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
-			or allowNonEggProgress
+		local goalModsMissing = dqEnd and dqEnd.where == "no_goal" and dqEnd.detail == "modules_missing"
+		local wantProgress = false
+		if not tracked then
+			if goalModsMissing and cfg().autoHatchProgressWhenGoalModulesMissing == false then
+				wantProgress = false
+			else
+				wantProgress = true
+			end
+		else
+			wantProgress = (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
+				or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
+				or allowNonEggProgress
+			if wantProgress and goalModsMissing and cfg().autoHatchProgressWhenGoalModulesMissing == false then
+				wantProgress = false
+			end
+		end
 		if wantProgress then
 			local phOk, phErr = pcall(function()
 				if AR.ARC.tryQuestEggHatchAssist(nil, { progressOnly = true }) == true then
@@ -6485,6 +6760,12 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 			end
 		end
 	end
+	pcall(function()
+		local ph = ARQ.maybeAutoTravelToTechWhenNoGoal(tracked)
+		if ph then
+			ARQ.tryTravelToTechStuckRetry(ph)
+		end
+	end)
 	isHatching = isHatching or hatchBusy == true
 	return tracked, isHatching
 end
