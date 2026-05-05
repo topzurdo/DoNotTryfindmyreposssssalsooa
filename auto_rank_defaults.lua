@@ -2,7 +2,7 @@ return {
 	enabled = true,
 	safeMode = true,
 	farmNormalBreakables = true,
-	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest" },
+	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest", "Comet" },
 	-- Часть random events (Coin Jar coins и т.д.) регистрируется в BreakableFrontend, но не попадает в типичные классы — добираем по BreakableUID на партях под __THINGS.RandomEvents.
 	farmMergeRandomEventBreakableParts = true,
 	farmPrioritizeRandomEventBreakables = true,
@@ -119,7 +119,7 @@ return {
 	questAutoUnlockEgg = true,
 	questEggUnlockCooldown = 8,
 	questAutoHatch = true,
-	questAutoHatchAnytime = false,
+	questAutoHatchAnytime = true,
 	questHatchAssistInterval = 1.1,
 	hatchClampToAffordableAmount = true,
 	-- Верхняя граница батча (ещё ограничивается EggCmds.GetMaxHatch и safeMode → 3).

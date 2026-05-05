@@ -1849,7 +1849,7 @@ local function canEnrollPetData(data)
 	if not data or not Directory or type(data.id) ~= "string" then return false end
 	local def = Directory.Pets[data.id]
 	if not def then return false end
-	
+
 	if def.huge or def.titanic or (def.exclusiveLevel and def.exclusiveLevel > 0) then
 		return false
 	end
@@ -1922,10 +1922,10 @@ end
 local function tryAutoDaycare()
 	if not cfg().autoDaycare or not DaycareCmds then return end
 	if safeIsInInstance() then return end
-	
+
 	local now = tick()
 	if now - Ticks.lastDaycareTick < (cfg().autoDaycareInterval or 5) then return end
-	
+
 	local active = nil
 	pcall(function() active = DaycareCmds.GetActive() end)
 	if type(active) == "table" then
@@ -1945,20 +1945,20 @@ local function tryAutoDaycare()
 			end
 		end
 	end
-	
+
 	local used, max = 0, 0
 	pcall(function()
 		used = DaycareCmds.GetUsedSlots()
 		max = DaycareCmds.GetMaxSlots()
 	end)
-	
+
 	local slotsLeft = max - used
 	if slotsLeft > 0 then
 		local s = Save and Save.Get and Save.Get()
 		if s and s.Inventory and s.Inventory.Pet then
 			local toEnroll = {}
 			local count = 0
-			
+
 			for uid, data in pairs(s.Inventory.Pet) do
 				if not data._lk then
 					local isEquipped = petUidIsCurrentlyEquipped(s, uid)
@@ -1974,8 +1974,8 @@ local function tryAutoDaycare()
 			if count > 0 then
 				Ticks.lastDaycareTick = now
 				local ok = false
-				pcall(function() 
-					local res = DaycareCmds.Enroll(toEnroll) 
+				pcall(function()
+					local res = DaycareCmds.Enroll(toEnroll)
 					ok = res ~= false and res ~= nil
 				end)
 				log("Daycare Enrolled", count, "pets", ok)
@@ -4390,6 +4390,26 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		return false
 	end
 
+	-- Универсальная проверка активных random events
+	local function hasActiveRandomEvent(keyword)
+		if not RandomEventCmds or type(RandomEventCmds.GetActive) ~= "function" then
+			return false
+		end
+		local active = RandomEventCmds.GetActive()
+		if type(active) ~= "table" then
+			return false
+		end
+		for uid, ev in pairs(active) do
+			if ev and ev.dir and type(ev.dir) == "string" then
+				local dirLower = string.lower(ev.dir)
+				if string.find(dirLower, keyword, 1, true) then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
 	if string.find(blob, "rainbow", 1, true) and string.find(blob, "mini", 1, true) and string.find(blob, "chest", 1, true) then
 		if miscUidForIds({ "Rainbow Mini Chest" }) and try("GiftBag_Open", "Rainbow Mini Chest", "Rainbow Mini Chest") then
 			return
@@ -4431,18 +4451,30 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 				end
 			end
 		end
+		if hasActiveRandomEvent("comet") then
+			traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "Comet_Spawn", "skip - already active comet")
+			return
+		end
 		local uid = miscUidForIds({ "Comet" })
 		if uid and try("Comet_Spawn", "comet", uid) then
 			return
 		end
 	end
 	if string.find(blob, "pinata", 1, true) then
+		if hasActiveRandomEvent("pinata") then
+			traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "MiniPinata_Consume", "skip - already active pinata")
+			return
+		end
 		local uid = miscUidForIds({ "Mini Pinata" })
 		if uid and try("MiniPinata_Consume", "mini pinata", uid) then
 			return
 		end
 	end
 	if string.find(blob, "lucky block", 1, true) or string.find(blob, "luckyblock", 1, true) then
+		if hasActiveRandomEvent("lucky") then
+			traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "MiniLuckyBlock_Consume", "skip - already active lucky block")
+			return
+		end
 		local uid = miscUidForIds({ "Mini Lucky Block" })
 		if uid and try("MiniLuckyBlock_Consume", "mini lucky block", uid) then
 			return
@@ -8076,15 +8108,15 @@ function AutoRankRuntimeState.tryRankUpViaGui()
 	if not RankCmds or not GUI then
 		return
 	end
-	
+
 	local ok, isMax, blocked, allRedeemed = pcall(function()
 		return RankCmds.IsMaxRank(), select(1, RankCmds.IsRankBlockedByZone()), RankCmds.AllRewardsRedeemed()
 	end)
-	
+
 	if not ok then
 		return
 	end
-	
+
 	if isMax then
 		return
 	end
@@ -8596,7 +8628,7 @@ function AutoRankRuntimeState.tryAutoClickMessageDialogYes()
 	if not pg then return end
 	local msg = pg:FindFirstChild("Message")
 	if not msg or not msg:IsA("ScreenGui") or not msg.Enabled then return end
-	
+
 	local clicked = false
 	for _, d in ipairs(msg:GetDescendants()) do
 		if d:IsA("GuiButton") and d.Visible then
@@ -9374,9 +9406,9 @@ local AR_CONS_TICK_PRIO = {
 		toggleCfgKey="consumeSprinklers",      reserveCfgKey="consumeReserveSprinkler",  idCfgKey="consumeSprinklerId" },
 	{ fn="potion",    name="DamagePotion",prio=6,  cond="alwaysOn",
 		toggleCfgKey="consumeDamagePotion",    reserveCfgKey="consumeReserveDamagePotion", idCfgKey="consumePotionIdDamage" },
-	{ fn="potion",    name="Rainbow",     prio=4,  cond="hatchSession",
+	{ fn="potion",    name="Rainbow",     prio=4,  cond="alwaysOn",
 		toggleCfgKey="consumeRainbow",         reserveCfgKey="consumeReserveRainbow",    idCfgKey="consumePotionIdRainbow" },
-	{ fn="potion",    name="Shiny",       prio=4,  cond="hatchSession",
+	{ fn="potion",    name="Shiny",       prio=4,  cond="alwaysOn",
 		toggleCfgKey="consumeShiny",           reserveCfgKey="consumeReserveShiny",      idCfgKey="consumePotionIdShiny" },
 	{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
 		toggleCfgKey="consumeHugeHunter",      reserveCfgKey="consumeReserveHugeHunter", idCfgKey="consumePotionIdHugeHunter" },
