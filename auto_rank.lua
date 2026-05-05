@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 17
+local AUTO_RANK_RUNTIME_VERSION = 19
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -610,7 +610,7 @@ local ClientFolder = ReplicatedStorage:WaitForChild("Library"):WaitForChild("Cli
 
 local Network, BreakableFrontend, Save, RankCmds, MapCmds, InstancingCmds, GUI, Directory, RanksUtil, FFlags
 local ZoneCmds, TeleportMapCmds, CurrencyCmds, Balancing, RebirthCmds, InstanceZoneCmds
-local GoalCmds, Variables, TabController, InventoryCmds
+local GoalCmds, Variables, TabController, InventoryCmds, QuestCmds
 local HatchingCmds, EggCmds, HatchingTypes, PotionCmds, FruitCmds, EggsUtil
 local EnchantCmds
 local ZonesUtil
@@ -888,6 +888,7 @@ local function ensureModules()
 		RebirthCmds = RebirthCmds or cacheReq(Client:WaitForChild("RebirthCmds"))
 		InstanceZoneCmds = InstanceZoneCmds or cacheReq(Client:WaitForChild("InstanceZoneCmds"))
 		GoalCmds = GoalCmds or cacheReq(Client:WaitForChild("GoalCmds"))
+		QuestCmds = QuestCmds or cacheReq(Client:WaitForChild("QuestCmds"))
 		Variables = Variables or cacheReq(ReplicatedStorage.Library:WaitForChild("Variables"))
 		TabController = TabController or cacheReq(Client:WaitForChild("TabController"))
 		InventoryCmds = InventoryCmds or cacheReq(Client:WaitForChild("InventoryCmds"))
@@ -3126,8 +3127,14 @@ function ARUI.tryClickReturnToMaxAreaButton()
 		if tq and tq._rankGuiSynth == true then
 			return
 		end
+		if tq and tq._rankStarSynth == true then
+			return
+		end
 		local gen = tq and tq._generatorName
 		if type(gen) == "string" and string.sub(gen, 1, 14) == "RankGuiSynth_" then
+			return
+		end
+		if type(gen) == "string" and string.sub(gen, 1, 10) == "RankStars_" then
 			return
 		end
 	end
@@ -3585,6 +3592,134 @@ function QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
 	return blob
 end
 
+--[[ Текст ранговой цели по звёздам: в Directory.Rewards ключ = 1..N, в UI заголовок = QuestCmds.MakeTitle(Save.Goals[*].Stars == slot). ]]
+function QuestAssist.resolveRankStarObjectiveTitle(save, ranksDir, rewardSlot)
+	local slotN = tonumber(rewardSlot)
+	local titleFallback = tostring(rewardSlot)
+	if save and type(save.Goals) == "table" and QuestCmds and type(QuestCmds.MakeTitle) == "function" and slotN then
+		for _, g in pairs(save.Goals) do
+			if type(g) == "table" and tonumber(g.Stars) == slotN then
+				local ok, t = pcall(function()
+					return QuestCmds.MakeTitle(g)
+				end)
+				if ok and type(t) == "string" and t ~= "" then
+					return t
+				end
+				break
+			end
+		end
+	end
+	if ranksDir and type(ranksDir.Goals) == "table" and slotN and QuestCmds and type(QuestCmds.MakeTitle) == "function" then
+		local tier = ranksDir.Goals[slotN]
+		if type(tier) == "table" then
+			local g0 = tier[1]
+			if type(g0) == "table" then
+				local ok2, t2 = pcall(function()
+					return QuestCmds.MakeTitle(g0)
+				end)
+				if ok2 and type(t2) == "string" and t2 ~= "" then
+					return t2
+				end
+			end
+		end
+	end
+	return titleFallback
+end
+
+--[[ Активная ранговая цель по звёздам (то же состояние ACTIVE, что и GUIs.Ranks):
+	после Rebirth>=1 модульные колбэки GoalCmds.Eggs/Zone/Use Potion/… возвращают nil — pickTrackedObjective пустой. ]]
+function QuestAssist.pickActiveRankStarRewardTrackedObjective()
+	if cfg().questRankStarSynthFromSave == false then
+		return nil
+	end
+	if not Save or not Directory or not RanksUtil or not Save.Get then
+		return nil
+	end
+	local save = nil
+	pcall(function()
+		save = Save.Get()
+	end)
+	if not save then
+		return nil
+	end
+	local rankId = nil
+	pcall(function()
+		rankId = RanksUtil.RankIDFromNumber(save.Rank)
+	end)
+	if not rankId then
+		return nil
+	end
+	local ranksDir = nil
+	pcall(function()
+		ranksDir = Directory.Ranks[rankId]
+	end)
+	if not ranksDir or type(ranksDir.Rewards) ~= "table" then
+		return nil
+	end
+	local rankStars = tonumber(save.RankStars) or 0
+	local redeemed = save.RedeemedRankRewards or {}
+	local keys = {}
+	local nArr = 0
+	pcall(function()
+		nArr = #ranksDir.Rewards
+	end)
+	if type(nArr) == "number" and nArr > 0 then
+		for i = 1, nArr do
+			if ranksDir.Rewards[i] ~= nil then
+				table.insert(keys, i)
+			end
+		end
+	end
+	if #keys == 0 then
+		for k in pairs(ranksDir.Rewards) do
+			table.insert(keys, k)
+		end
+		table.sort(keys, function(a, b)
+			local na, nb = tonumber(a), tonumber(b)
+			if na and nb then
+				return na < nb
+			end
+			return tostring(a) < tostring(b)
+		end)
+	end
+	local v22 = 0
+	for _, v25 in ipairs(keys) do
+		local v26 = ranksDir.Rewards[v25]
+		if type(v26) == "table" then
+			local starsReq = tonumber(v26.StarsRequired) or 0
+			v22 += starsReq
+			local v27 = v22 <= rankStars
+			local v28 = redeemed[tostring(v25)] ~= nil
+			local v29 = not (v27 or v28)
+			if v29 then
+				if v22 - starsReq <= rankStars then
+					v29 = rankStars < v22
+				else
+					v29 = false
+				end
+			end
+			if v29 then
+				local title = QuestAssist.resolveRankStarObjectiveTitle(save, ranksDir, v25)
+				local gen = "RankStars_" .. tostring(v25)
+				if #gen > 200 then
+					gen = string.sub(gen, 1, 200)
+				end
+				return {
+					Priority = 1_000_000,
+					_generatorName = gen,
+					_rankStarSynth = true,
+					_rankStarRewardKey = v25,
+					Displays = {
+						{ Description = title },
+						{ Title = title },
+					},
+				}
+			end
+		end
+	end
+	return nil
+end
+
 function QuestAssist.rankGuiBlobSuggestInstanceIds(blobLow)
 	local ids = {}
 	local function append(id)
@@ -3700,6 +3835,33 @@ function ARG.refreshTrackedObjective()
 		return nil
 	end
 
+	do
+		local rs = QuestAssist.pickActiveRankStarRewardTrackedObjective()
+		if rs then
+			cachedTrackedObjective = rs
+			clearRankGuiSynthProtection()
+			AutoRankRuntimeState.diagQuest = {
+				ok = true,
+				generator = rs._generatorName,
+				snippet = ARG.objectiveSnippetForDiag(rs),
+				rankStarSynth = true,
+			}
+			return cachedTrackedObjective
+		end
+	end
+
+	if cfg().questOnlyRankStarObjectives then
+		cachedTrackedObjective = nil
+		clearRankGuiSynthProtection()
+		AutoRankRuntimeState.diagGoalPick = AutoRankRuntimeState.diagGoalPick or {}
+		AutoRankRuntimeState.diagQuest = {
+			ok = false,
+			where = "no_goal",
+			detail = "questOnlyRankStarObjectives_no_active_rank_reward",
+		}
+		return nil
+	end
+
 	cachedTrackedObjective = ARG.pickTrackedObjective()
 	if cachedTrackedObjective and cachedTrackedObjective._rankGuiSynth ~= true then
 		clearRankGuiSynthProtection()
@@ -3727,6 +3889,7 @@ function ARG.refreshTrackedObjective()
 			generator = cachedTrackedObjective._generatorName,
 			snippet = ARG.objectiveSnippetForDiag(cachedTrackedObjective),
 			synthRankGui = cachedTrackedObjective._rankGuiSynth == true,
+			rankStarSynth = cachedTrackedObjective._rankStarSynth == true,
 		}
 	else
 		local dg = AutoRankRuntimeState.diagGoalPick
@@ -3835,6 +3998,9 @@ end
 
 function QuestAssist.shouldSkipObjectiveInteraction(tracked)
 	if not tracked then
+		return false
+	end
+	if tracked._rankStarSynth == true then
 		return false
 	end
 	-- Synth из Rank GUI: имя содержит "…_Fishing", blob — "fishing" → иначе срабатывает questIgnoreMinigames и не вызывается tryQuestResolveDisplayTargets (нет тепорта к GetEnterPart).
@@ -4147,9 +4313,20 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		if string.find(blob, "randomly spawned", 1, true) and not invJarCue then
 			return
 		end
-		-- «in best area» относится к мировым спавнам; цели вида «coin jars in best area» как раз требуют CoinJar из инвентаря здесь.
+		-- «in best area»: мировые спавны режем, но Misc Comet/Pinata/Jar из инвентаря как раз для этой зоны.
 		if string.find(blob, "in best area", 1, true) and not invJarCue then
-			return
+			local bl = string.lower(blob)
+			local miscBest = string.find(bl, "comet", 1, true)
+				or string.find(bl, "pinata", 1, true)
+				or string.find(bl, "lucky block", 1, true)
+				or string.find(bl, "luckyblock", 1, true)
+				or string.find(bl, "coin jar", 1, true)
+				or string.find(bl, "item jar", 1, true)
+				or string.find(bl, "mini chest", 1, true)
+				or (string.find(bl, "rainbow", 1, true) and string.find(bl, "chest", 1, true))
+			if not miscBest then
+				return
+			end
 		end
 	end
 	local s = Save and Save.Get and Save.Get()
@@ -4235,6 +4412,25 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 	end
 	if string.find(blob, "comet", 1, true) then
+		local bl = string.lower(blob)
+		if string.find(bl, "best area", 1, true) or string.find(bl, "in best area", 1, true) then
+			local maxId = nil
+			pcall(function()
+				maxId = ZoneCmds and select(1, ZoneCmds.GetMaxOwnedZone())
+			end)
+			if maxId and z and not AR.zonesIdMatch(z, maxId) then
+				return
+			end
+			if cfg().questCometPivotNearFarmAnchorBeforeSpawn ~= false and maxId and ZonesUtil and AR.playerNearZoneTeleportPoint then
+				local dist = tonumber(cfg().questCometFarmNearStuds) or cfg().teleportClientPivotNearStuds or 96
+				if not AR.playerNearZoneTeleportPoint(maxId, dist) then
+					if AR.Teleports and type(AR.Teleports.schedulePivotRepeats) == "function" then
+						AR.Teleports.schedulePivotRepeats(maxId)
+					end
+					return
+				end
+			end
+		end
 		local uid = miscUidForIds({ "Comet" })
 		if uid and try("Comet_Spawn", "comet", uid) then
 			return
@@ -7741,7 +7937,9 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 			and cfg().autoHatchProgressWhenNonEggQuest ~= false
 			and not eggRelated
 		local shouldPrioritizeZoneProgress = false
-		if ARZone and type(ARZone.getNextMainZonePurchaseInfo) == "function" then
+		if cfg().questOnlyRankStarObjectives then
+			shouldPrioritizeZoneProgress = false
+		elseif ARZone and type(ARZone.getNextMainZonePurchaseInfo) == "function" then
 			local nextInfo = nil
 			pcall(function()
 				nextInfo = ARZone.getNextMainZonePurchaseInfo({ ignoreQuestCompletion = true })
@@ -8355,6 +8553,9 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 	local qSnippet = dq.snippet or dq.detail or ""
 	if dq.synthRankGui then
 		qSnippet = tostring(qSnippet) .. " [rankGuiSynth]"
+	end
+	if dq.rankStarSynth then
+		qSnippet = tostring(qSnippet) .. " [rankStarSynth]"
 	end
 	trace(
 		"pulse.quest",

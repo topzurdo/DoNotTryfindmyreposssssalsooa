@@ -107,6 +107,10 @@ return {
 	farmExplosiveAssistPreferOrder = { "TNT Crate", "TNT" },
 	questAssistEnabled = true,
 	questAssistInterval = 0.65,
+	-- После Rebirth>=1 колбэки GoalCmds (Eggs/Zone/Use Potion/…) возвращают nil — активная цель как в GUIs.Ranks: Save + Directory.Ranks[..].Rewards.
+	questRankStarSynthFromSave = true,
+	-- Не опрашивать GoalCmds: только ранговые звёздные квесты (синтез выше) + общий фарм/вылуп/клейм наград.
+	questOnlyRankStarObjectives = true,
 	questTeleportToTarget = true,
 	questTeleportMinDist = 14,
 	questTeleportYOffset = 6,
@@ -128,6 +132,9 @@ return {
 	questSpawnInventoryBreakables = true,
 	questSpawnInventoryWhenGoalModulesMissing = false,
 	questSpawnInventoryBreakablesInterval = 2.75,
+	-- Перед Comet_Spawn для «…in best area»: та же max-зона + pivot к точке телепорта зоны (иначе комета падает не на фарм-якорь).
+	questCometPivotNearFarmAnchorBeforeSpawn = true,
+	questCometFarmNearStuds = 96,
 	-- Не расходовать Misc на gift/comet если текст только про мировые спавны — но цели про coin/item jar («…in best area») не резать (см. tryQuestSpawnInventoryBreakablesFromBlob).
 	questSpawnInventorySkipWorldSpawnObjectives = true,
 	-- Тексты целей Rank (справа) без GoalCmds — скрейп GUI.Rank / GoalsSide для Comet/Jar спавна при no_goal.
@@ -176,6 +183,7 @@ return {
 	questGuiClickInterval = 0.38,
 	questPrioritizeListedGoalGenerators = true,
 	questGoalGeneratorPrioritySubstrings = {
+		"rankstars",
 		"eggs",
 		"zone",
 		"unlock castle",
