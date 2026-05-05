@@ -1,4 +1,3 @@
--- Опционально: readfile перезаписывает дефолты. Канон — встроенная копия в auto_rank.lua; при правках держи оба в синке.
 return {
 	enabled = true,
 	safeMode = true,
