@@ -288,6 +288,18 @@ do
 		G.AutoRank._arConsumeAndEnchantTuneV7 = 1
 	end
 end
+do
+	local v = G.AutoRank._arNoGoalFallbackBalanceV8 or 0
+	if v < 1 then
+		if G.AutoRank.questSpawnInventoryWhenGoalModulesMissing == nil then
+			G.AutoRank.questSpawnInventoryWhenGoalModulesMissing = false
+		end
+		if G.AutoRank.autoHatchProgressWhenGoalModulesMissingAtProgressCap == nil then
+			G.AutoRank.autoHatchProgressWhenGoalModulesMissingAtProgressCap = true
+		end
+		G.AutoRank._arNoGoalFallbackBalanceV8 = 1
+	end
+end
 
 local function cfg()
 	return G.AutoRank
@@ -4460,6 +4472,18 @@ function ARQ.tryAutoOpenMiscGiftBags()
 end
 
 function ARQ.tryQuestSpawnInventoryBreakables(tracked)
+	local dq = AutoRankRuntimeState and AutoRankRuntimeState.diagQuest or nil
+	local dg = AutoRankRuntimeState and AutoRankRuntimeState.diagGoalPick or nil
+	local goalModulesDead = type(dg) == "table"
+		and (dg.generatorCount or 0) > 0
+		and (dg.validCallbacks or 0) == 0
+	local blindNoGoal = tracked == nil
+		and type(dq) == "table"
+		and dq.where == "no_goal"
+		and (dq.detail == "modules_missing" or goalModulesDead)
+	if blindNoGoal and cfg().questSpawnInventoryWhenGoalModulesMissing == false then
+		return
+	end
 	local chunks = {}
 	if type(tracked) == "table" then
 		local flat = QuestAssist.flattenObjectiveText(tracked)
@@ -5096,7 +5120,23 @@ function ARQ.buildTargetEnchantPlan(maxSlots, priorityList, tierById)
 	if type(priorityList) ~= "table" or maxSlots <= 0 then
 		return plan
 	end
-	for _ = 1, maxSlots do
+	-- Pass 1: стараемся занять слоты разными приоритетными энчантами.
+	for _, eid in ipairs(priorityList) do
+		if #plan >= maxSlots then
+			break
+		end
+		local tier = tierById[eid]
+		if type(tier) == "number" and tier >= 1 then
+			local cap = ARQ.enchantMaxCopiesSameTier(eid, tier)
+			local c = counts[eid] or 0
+			if c < cap then
+				table.insert(plan, eid)
+				counts[eid] = c + 1
+			end
+		end
+	end
+	-- Pass 2: если слоты остались — добиваем дублями по приоритету.
+	while #plan < maxSlots do
 		local placed = false
 		for _, eid in ipairs(priorityList) do
 			local tier = tierById[eid]
@@ -5703,13 +5743,84 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 			return tostring(a.uid) < tostring(b.uid)
 		end)
 	end
-	local pick = candidates[1]
-	local take = math.min(pick.maxC, math.max(1, cap))
-	Ticks.lastFruitConsumeTick = now
-	pcall(function()
-		FruitCmds.Consume(pick.uid, take)
-	end)
-	log("Fruits: Consume", pick.uid, pick.id, take)
+	local remaining = math.max(1, cap)
+	local maxActions = math.max(1, math.floor(tonumber(cfg().questConsumeFruitMaxActionsPerPulse) or 3))
+	local actions = 0
+	while remaining > 0 and actions < maxActions do
+		local pulseCandidates = {}
+		local sNow = Save and Save.Get and Save.Get()
+		local invNow = sNow and sNow.Inventory and sNow.Inventory.Fruit
+		if type(invNow) ~= "table" then
+			break
+		end
+		for uid, data in pairs(invNow) do
+			if type(uid) == "string" then
+				local maxC = computeFruitHeadroom(uid, data)
+				if maxC >= 1 then
+					local tier = tonumber(data and data.tn) or 1
+					local shiny = false
+					if cont and FruitItem then
+						local item = cont:Get(uid, FruitItem)
+						if item then
+							if item.GetTier then
+								pcall(function()
+									local t = item:GetTier()
+									if type(t) == "number" then
+										tier = t
+									end
+								end)
+							end
+							if item.IsShiny then
+								pcall(function()
+									shiny = item:IsShiny() == true
+								end)
+							end
+						end
+					end
+					table.insert(pulseCandidates, {
+						uid = uid,
+						id = data and data.id,
+						maxC = maxC,
+						tier = tier,
+						shiny = shiny,
+					})
+				end
+			end
+		end
+		if #pulseCandidates == 0 then
+			break
+		end
+		if cfg().questConsumeFruitsPreferMaxTier ~= false then
+			table.sort(pulseCandidates, function(a, b)
+				if a.tier ~= b.tier then
+					return a.tier > b.tier
+				end
+				if a.shiny ~= b.shiny then
+					return a.shiny
+				end
+				if a.maxC ~= b.maxC then
+					return a.maxC > b.maxC
+				end
+				return tostring(a.uid) < tostring(b.uid)
+			end)
+		else
+			table.sort(pulseCandidates, function(a, b)
+				return tostring(a.uid) < tostring(b.uid)
+			end)
+		end
+		local pick = pulseCandidates[1]
+		local take = math.min(pick.maxC, remaining)
+		if take < 1 then
+			break
+		end
+		Ticks.lastFruitConsumeTick = now
+		pcall(function()
+			FruitCmds.Consume(pick.uid, take)
+		end)
+		log("Fruits: Consume", pick.uid, pick.id, take)
+		remaining -= take
+		actions += 1
+	end
 end
 
 function AR.Cons.tryAutoConsumeConsumablesLegacy()
@@ -7639,6 +7750,9 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 				or goalGeneratorsDead
 			)
 		local suppressBlindEgg = cfg().autoHatchProgressWhenGoalModulesMissing == false and progressHatchBlocked
+		if suppressBlindEgg and not shouldPrioritizeZoneProgress and cfg().autoHatchProgressWhenGoalModulesMissingAtProgressCap ~= false then
+			suppressBlindEgg = false
+		end
 		local wantProgress = false
 		if not tracked then
 			wantProgress = not suppressBlindEgg and not shouldPrioritizeZoneProgress

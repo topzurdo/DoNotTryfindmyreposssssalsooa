@@ -126,6 +126,7 @@ return {
 	infinityEggQuestKeywords = { "infinity", "infinity egg", "infinityegg" },
 	questAssistObjectiveKeywords = true,
 	questSpawnInventoryBreakables = true,
+	questSpawnInventoryWhenGoalModulesMissing = false,
 	questSpawnInventoryBreakablesInterval = 2.75,
 	-- Не расходовать Misc на gift/comet если текст только про мировые спавны — но цели про coin/item jar («…in best area») не резать (см. tryQuestSpawnInventoryBreakablesFromBlob).
 	questSpawnInventorySkipWorldSpawnObjectives = true,
@@ -159,6 +160,7 @@ return {
 	questConsumeFruits = true,
 	questConsumeFruitsInterval = 1.5,
 	questConsumeFruitMaxAtOnce = 20,
+	questConsumeFruitMaxActionsPerPulse = 3,
 	questConsumeFruitsPreferMaxTier = true,
 	autoConsumeConsumables = true,
 	autoConsumeConsumablesInterval = 2.2,
@@ -350,6 +352,8 @@ return {
 	autoHatchProgressWithoutQuest = true,
 	-- При no_goal из-за missing GoalCmds/FFlags или при generators>0 но validCallbacks==0 (executor ломает Callback): не крутить слепой hatching, а отдавать приоритет автопрогрессии зон.
 	autoHatchProgressWhenGoalModulesMissing = false,
+	-- Если прогресс зон уже упёрся (следующей зоны нет), при no_goal можно вернуть progress-hatch как fallback.
+	autoHatchProgressWhenGoalModulesMissingAtProgressCap = true,
 	-- Если false: при уже выбранной не-яйцовой цели (Machines, зона, …) не крутить progress-hatch параллельно — именно это даёт спам скрытых яиц при «Claim diamonds» и т.п.
 	autoHatchProgressWhenNonEggQuest = false,
 	autoHatchProgressCooldown = 10,
