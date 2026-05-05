@@ -143,6 +143,38 @@ do
 	end
 end
 do
+	local v = G.AutoRank._arConsumablesTuningV3 or 0
+	if v < 1 then
+		-- Бандлы Gift Bag используют amount (не uid), а quest-поушены не должны блокироваться autoConsume-режимом.
+		G.AutoRank.consumablesLegacySkipQuestPotionsWhenAutoConsume = false
+		G.AutoRank.consumeRainbow = true
+		G.AutoRank.consumeReserveRainbow = 0
+		G.AutoRank.questConsumeFruitMaxAtOnce = math.max(tonumber(G.AutoRank.questConsumeFruitMaxAtOnce) or 4, 20)
+		G.AutoRank._arConsumablesTuningV3 = 1
+	end
+end
+do
+	local v = G.AutoRank._arConsumablesPowerLevelV4 or 0
+	if v < 1 then
+		-- Режим авто-прокачки: максимум аптайма бустов, не только квестовые траты.
+		G.AutoRank.consumeShiny = true
+		G.AutoRank.consumeHugeHunter = true
+		G.AutoRank.consumeReserveDamagePotion = 0
+		G.AutoRank.consumeReserveShiny = 0
+		G.AutoRank.consumeReserveHugeHunter = 0
+		G.AutoRank.consumeMaxActionsPerTick = math.max(tonumber(G.AutoRank.consumeMaxActionsPerTick) or 1, 3)
+		G.AutoRank._arConsumablesPowerLevelV4 = 1
+	end
+end
+do
+	local v = G.AutoRank._arProgressHatchReserveFixV5 or 0
+	if v < 1 then
+		-- Для auto-прокачки progress-hatch не должен блокироваться резервом на следующую зону.
+		G.AutoRank.hatchReserveSkipForProgressOnly = true
+		G.AutoRank._arProgressHatchReserveFixV5 = 1
+	end
+end
+do
 	local v = G.AutoRank._arEggOpeningUiMigrate or 0
 	if v < 1 then
 		-- Глобальный Mouse.Button1Down по всем коннекшенам ломал чужой UI; бандлы во время hatch давали GiftBag assertion.
@@ -152,6 +184,27 @@ do
 			G.AutoRank.eggOpeningPostInvokeBurstCount = math.min(tonumber(G.AutoRank.eggOpeningPostInvokeBurstCount) or 1, 2)
 		end
 		G.AutoRank._arEggOpeningUiMigrate = 1
+	end
+end
+do
+	local v = G.AutoRank._arHatchProximityGateV6 or 0
+	if v < 1 then
+		if G.AutoRank.hatchRequireNearEggBeforeAttempt == nil then
+			G.AutoRank.hatchRequireNearEggBeforeAttempt = true
+		end
+		if G.AutoRank.hatchMaxDistanceToEggStuds == nil then
+			G.AutoRank.hatchMaxDistanceToEggStuds = 96
+		end
+		if G.AutoRank.progressHatchBackoffOnProximityFailSec == nil then
+			G.AutoRank.progressHatchBackoffOnProximityFailSec = 18
+		end
+		if G.AutoRank.hatchAbortBusyOnAttemptFail == nil then
+			G.AutoRank.hatchAbortBusyOnAttemptFail = true
+		end
+		if G.AutoRank.enchantsSkipTierUpgradeWhileHatchBusy == nil then
+			G.AutoRank.enchantsSkipTierUpgradeWhileHatchBusy = true
+		end
+		G.AutoRank._arHatchProximityGateV6 = 1
 	end
 end
 
@@ -832,6 +885,7 @@ Ticks.lastReturnAreaGuiTick = 0
 Ticks.lastQuestPickTick = 0
 Ticks.lastQuestHatchTick = 0
 Ticks.lastProgressOnlyHatchTick = 0
+Ticks.progressHatchProximityBackoffUntil = 0
 Ticks.lastPotionConsumeTick = 0
 Ticks.lastFruitConsumeTick = 0
 Ticks.lastConsumableConsumeTick = 0
@@ -1007,6 +1061,23 @@ local function hatchAsyncPipelineActive()
 	return hatchBusy or (type(Ticks.hatchAsyncGuardUntil) == "number" and tick() < Ticks.hatchAsyncGuardUntil)
 end
 
+--- После ошибки AttemptHatch / отмены — сразу снять длинный hatchBusy и guards, чтобы фарм/телепорты не стояли впустую.
+local function forceClearHatchBusyPipeline(reason, progressOnlyFlag, detail)
+	hatchBusyToken += 1
+	hatchBusy = false
+	hatchBusyArmedAt = 0
+	Ticks.hatchAsyncGuardUntil = 0
+	if progressOnlyFlag then
+		local sec = tonumber(cfg().progressHatchBackoffOnProximityFailSec) or 18
+		Ticks.progressHatchProximityBackoffUntil = tick() + math.max(2, sec)
+		Ticks.lastProgressOnlyHatchTick = tick()
+	end
+	traceThrottled("hatch_pipeline_abort", 8, "hatch", reason or "abort", detail)
+	if type(scheduleQuestAssistPulseAfterHatchBusy) == "function" then
+		scheduleQuestAssistPulseAfterHatchBusy()
+	end
+end
+
 local function hatchSequenceBlocksWorldTeleport()
 	if hatchAsyncPipelineActive() then
 		return true
@@ -1087,6 +1158,7 @@ local function autoRankDisconnectAll()
 	ensureModulesCachedOk = false
 	Ticks.lastEnsureModulesHeartbeatTick = 0
 	Ticks.hatchAsyncGuardUntil = 0
+	Ticks.progressHatchProximityBackoffUntil = 0
 	if type(restoreRuntimeHooks) == "function" then
 		pcall(restoreRuntimeHooks)
 	end
@@ -4085,10 +4157,22 @@ ARQ._giftBagOpenNameOnly = {
 	["Charm Stone"] = true,
 	["Seed Bag"] = true,
 }
--- Studio: Large Gift Bag / Gift Bag — второй аргумент uid.
 ARQ._giftBagOpenNameAndUid = {
+}
+-- Studio ActionMenu: Gift Bag / Large Gift Bag — второй аргумент это amount.
+ARQ._giftBagOpenNameAndAmount = {
 	["Large Gift Bag"] = true,
 	["Gift Bag"] = true,
+}
+-- Бандлы тоже работают через amount (не uid): Open/Open 5/10/20/30/50/100.
+ARQ._giftBagOpenBundleByAmount = {
+	["Fruit Bundle"] = true,
+	["Toy Bundle"] = true,
+	["Potion Bundle"] = true,
+	["Enchant Bundle"] = true,
+	["Large Enchant Bundle"] = true,
+	["Large Potion Bundle"] = true,
+	["Flag Bundle"] = true,
 }
 
 ARQ._giftBagMiscStackN = function(data)
@@ -4108,8 +4192,36 @@ end
 
 function ARQ.giftBagTryOpenOne(pickId, pickUid, beforeAmt)
 	local attempts = {}
+	local function pickBundleOpenAmount(stackN)
+		local n = tonumber(stackN) or 0
+		local steps = { 100, 50, 30, 20, 10, 5 }
+		for i = 1, #steps do
+			local s = steps[i]
+			if n >= s then
+				return s
+			end
+		end
+		return nil
+	end
 	if ARQ._giftBagOpenNameOnly[pickId] then
 		attempts[1] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId)
+		end
+	elseif ARQ._giftBagOpenBundleByAmount[pickId] then
+		local openN = pickBundleOpenAmount(beforeAmt)
+		attempts[1] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId)
+		end
+		if openN then
+			attempts[2] = function()
+				return AR.Net.invoke("GiftBag_Open", pickId, openN)
+			end
+		end
+	elseif ARQ._giftBagOpenNameAndAmount[pickId] then
+		attempts[1] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId, 1)
+		end
+		attempts[2] = function()
 			return AR.Net.invoke("GiftBag_Open", pickId)
 		end
 	elseif ARQ._giftBagOpenNameAndUid[pickId] then
@@ -5020,13 +5132,16 @@ function ARQ.tryQuestEquipEnchantFromInventory(eggMode)
 	end
 	local tierById = ARQ.inventoryMaxTierByEnchantId(s)
 	local rowsTierUp = ARQ.getEquippedEnchantRows(s)
-	for _, row in ipairs(rowsTierUp) do
-		local invMax = tierById[row.id]
-		if type(invMax) == "number" and invMax > row.tier then
-			pcall(function()
-				EnchantCmds.Unequip(tonumber(row.slot) or row.slot)
-			end)
-			log("Enchants_Unequip", row.slot, row.id, "tier_upgrade", row.tier, invMax)
+	local skipTierUp = hatchAsyncPipelineActive() and cfg().enchantsSkipTierUpgradeWhileHatchBusy ~= false
+	if not skipTierUp then
+		for _, row in ipairs(rowsTierUp) do
+			local invMax = tierById[row.id]
+			if type(invMax) == "number" and invMax > row.tier then
+				pcall(function()
+					EnchantCmds.Unequip(tonumber(row.slot) or row.slot)
+				end)
+				log("Enchants_Unequip", row.slot, row.id, "tier_upgrade", row.tier, invMax)
+			end
 		end
 	end
 	s = Save and Save.Get and Save.Get()
@@ -5404,13 +5519,44 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 	end)
 	local FruitItem = AR.Cons.getFruitItemClass()
 	local cap = tonumber(cfg().questConsumeFruitMaxAtOnce) or 4
+	local function rawInventoryAmount(data)
+		if type(data) ~= "table" then
+			return 0
+		end
+		return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+	end
+	local function computeFruitHeadroom(uid, data)
+		local maxC = 0
+		pcall(function()
+			maxC = FruitCmds.GetMaxConsume(uid) or 0
+		end)
+		if maxC > 0 then
+			return maxC
+		end
+		if type(data) ~= "table" or type(data.id) ~= "string" then
+			return 0
+		end
+		local queueLimit = 0
+		pcall(function()
+			queueLimit = tonumber(FruitCmds.ComputeFruitQueueLimit and FruitCmds.ComputeFruitQueueLimit()) or 0
+		end)
+		if queueLimit <= 0 then
+			return 0
+		end
+		local activeN = 0
+		pcall(function()
+			local okHas, active = FruitCmds.Has(data.id)
+			if okHas and type(active) == "table" then
+				activeN = #(active.Shiny or {}) + #(active.Normal or {})
+			end
+		end)
+		local amount = rawInventoryAmount(data)
+		return math.max(0, math.min(queueLimit - activeN, amount))
+	end
 	local candidates = {}
 	for uid, data in pairs(s.Inventory.Fruit) do
 		if type(uid) == "string" then
-			local maxC = 0
-			pcall(function()
-				maxC = FruitCmds.GetMaxConsume(uid) or 0
-			end)
+			local maxC = computeFruitHeadroom(uid, data)
 			if maxC >= 1 then
 				local tier = tonumber(data and data.tn) or 1
 				local shiny = false
@@ -5530,6 +5676,7 @@ function AR.Cons.tryAutoBuffConsumablesPulseLegacy()
 	pcall(function()
 		local skipQuestPotions = cfg().autoConsumeEnabled == true
 			and cfg().consumablesLegacySkipQuestPotionsWhenAutoConsume ~= false
+			and AR.Cons.canAutoConsumeAnyPotionNow()
 		if not skipQuestPotions then
 			AR.Cons.tryQuestConsumePotionLegacy()
 		end
@@ -6331,6 +6478,100 @@ AR.ARC = (function()
 		end
 	end
 
+	--- После pivot: есть ли персонаж достаточно близко к яйцу (иначе AttemptHatch даст «too far», а hatchBusy уже arm).
+	function HatchAssist.validateNearEgg(eggDir, tracked)
+		if cfg().hatchRequireNearEggBeforeAttempt == false then
+			return true
+		end
+		local maxD = tonumber(cfg().hatchMaxDistanceToEggStuds)
+		if type(maxD) ~= "number" or maxD <= 0 then
+			maxD = (tonumber(cfg().hatchEggProximity) or 36) + 48
+		end
+		local ch = LocalPlayer.Character
+		local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+		local pp = ch and ch.PrimaryPart
+		local posRef = hrp or pp
+		if not posRef then
+			return false, "no_character"
+		end
+		local ppos = posRef.Position
+
+		if eggDir._id == "Infinity Egg" then
+			if not HatchAssist.infinityAllowed(tracked) then
+				return true
+			end
+			local bestMag = math.huge
+			for _, inst in ipairs(CollectionService:GetTagged("InfinityEgg")) do
+				if inst:IsA("Model") then
+					local center = inst:FindFirstChild("Center")
+					if center and center:IsA("BasePart") then
+						local d = (center.Position - ppos).Magnitude
+						if d < bestMag then
+							bestMag = d
+						end
+					end
+				end
+			end
+			if bestMag == math.huge then
+				return false, "no_infinity_stand"
+			end
+			if bestMag <= maxD then
+				return true
+			end
+			return false, "too_far_infinity"
+		end
+
+		local uid = nil
+		if CustomEggsCmds and eggDir._id then
+			pcall(function()
+				uid = CustomEggsCmds.GetClosestById(eggDir._id)
+			end)
+		end
+		if uid then
+			local row = nil
+			pcall(function()
+				row = CustomEggsCmds.Get(uid)
+			end)
+			if row and row._model then
+				local d = nil
+				pcall(function()
+					d = (row._model:GetPivot().Position - ppos).Magnitude
+				end)
+				if type(d) ~= "number" then
+					return false, "no_custom_cf"
+				end
+				if d <= maxD then
+					return true
+				end
+				return false, "too_far_custom"
+			end
+			return false, "no_custom_model"
+		end
+
+		if eggDir.eggNumber and EggsUtil and EggsUtil.GetEggPart then
+			local part = nil
+			pcall(function()
+				part = EggsUtil.GetEggPart(eggDir.eggNumber)
+			end)
+			if not part then
+				return false, "no_part"
+			end
+			local mag = nil
+			pcall(function()
+				mag = (part.Position - ppos).Magnitude
+			end)
+			if type(mag) ~= "number" then
+				return false, "bad_part_dist"
+			end
+			if mag <= maxD then
+				return true
+			end
+			return false, "too_far_part"
+		end
+
+		return true
+	end
+
 	local MinigameAssist = (function()
 		local function forEachDescendantDepthLimited(root, maxDepth, callback)
 			if not root or type(callback) ~= "function" then
@@ -6575,6 +6816,11 @@ AR.ARC = (function()
 			hatchSkipDiag("progress_cooldown", pcd)
 			return
 		end
+		local ub = Ticks.progressHatchProximityBackoffUntil
+		if type(ub) == "number" and tick() < ub then
+			hatchSkipDiag("proximity_backoff_remain", ub - tick())
+			return
+		end
 	end
 	if now - Ticks.lastQuestHatchTick < (cfg().questHatchAssistInterval or 1.1) then
 		hatchSkipDiag("assist_interval")
@@ -6795,12 +7041,39 @@ AR.ARC = (function()
 		hatchSkipDiag("no_currency", eggDir and eggDir._id)
 		return
 	end
-	Ticks.lastQuestHatchTick = now
-
 	local pivotDelay = cfg().hatchAfterPivotDelay or 0.38
 	local busyHold = cfg().hatchBusyHoldSeconds or 2.6
 	local guardSec = math.max(tonumber(cfg().hatchAsyncTeleportBlockSeconds) or 18, pivotDelay + 1)
 	local holdPipeline = math.max(busyHold, tonumber(cfg().hatchBusyHoldSecondsHidden) or guardSec, guardSec)
+
+	local didSyncEggPrep = false
+	if cfg().hatchRequireNearEggBeforeAttempt ~= false then
+		HatchAssist.pivotForEgg(eggDir, tracked)
+		task.wait(pivotDelay)
+		local okProx, whyProx = HatchAssist.validateNearEgg(eggDir, tracked)
+		if not okProx then
+			local bs = tonumber(cfg().progressHatchBackoffOnProximityFailSec) or 18
+			Ticks.progressHatchProximityBackoffUntil = tick() + math.max(2, bs)
+			if progressOnly then
+				Ticks.lastProgressOnlyHatchTick = now
+			end
+			traceThrottled(
+				"hatch_skip_proximity_gate",
+				10,
+				"hatch",
+				"near-egg gate:",
+				tostring(whyProx),
+				eggDir._id,
+				"n",
+				n
+			)
+			hatchSkipDiag("proximity_gate", whyProx)
+			return
+		end
+		didSyncEggPrep = true
+	end
+
+	Ticks.lastQuestHatchTick = now
 
 	local autoOpt = HatchingTypes.Options and HatchingTypes.Options.AUTO
 	if autoOpt then
@@ -6819,8 +7092,10 @@ AR.ARC = (function()
 	task.spawn(function()
 		Ticks.hatchAsyncGuardUntil = tick() + guardSec
 		pcall(function()
-			HatchAssist.pivotForEgg(eggDir, tracked)
-			task.wait(pivotDelay)
+			if not didSyncEggPrep then
+				HatchAssist.pivotForEgg(eggDir, tracked)
+				task.wait(pivotDelay)
+			end
 			if customUid then
 				HatchingCmds.SetupCustomEgg(customUid, eggDir, hatchAmt)
 			else
@@ -6845,13 +7120,19 @@ AR.ARC = (function()
 					"world",
 					modWorld and modWorld.id
 				)
+				if cfg().hatchAbortBusyOnAttemptFail ~= false then
+					local wl = string.lower(tostring(hatchWhy or ""))
+					if string.find(wl, "too far", 1, true) then
+						forceClearHatchBusyPipeline("attempt_too_far", progressOnly, hatchWhy)
+					end
+				end
 			end
-			if cfg().hideEggHatching then
+			if cfg().hideEggHatching and hatchOk == true then
 				ensureAutoRankWorldSelection()
 				local nBurst = tonumber(cfg().eggOpeningPostInvokeBurstCount)
-				local modWorld = AutoRankWorld.active
-				if modWorld and type(modWorld.adjustEggOpeningBurstCount) == "function" then
-					local okAdj, nb = pcall(modWorld.adjustEggOpeningBurstCount, nBurst)
+				local mw2 = AutoRankWorld.active
+				if mw2 and type(mw2.adjustEggOpeningBurstCount) == "function" then
+					local okAdj, nb = pcall(mw2.adjustEggOpeningBurstCount, nBurst)
 					if okAdj and type(nb) == "number" and nb >= 0 then
 						nBurst = nb
 					end
@@ -8567,6 +8848,36 @@ function AR.Cons.tryConsumePotion(name, potionId, reserve)
 	return ok
 end
 
+function AR.Cons.canAutoConsumeAnyPotionNow()
+	local cfg_t = cfg()
+	if cfg_t.autoConsumeEnabled ~= true then
+		return false
+	end
+	if ARQ.buffConsumablesInstanceBlocked() then
+		return false
+	end
+	if not Save or type(Save.Get) ~= "function" then
+		return false
+	end
+	local s = Save.Get()
+	if not s or not s.Inventory or type(s.Inventory.Potion) ~= "table" then
+		return false
+	end
+	for _, e in ipairs(AR.Cons.tickPrioPotions or {}) do
+		if e.fn == "potion" and cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
+			local pid = cfg_t[e.idCfgKey]
+			local reserve = tonumber(cfg_t[e.reserveCfgKey]) or 0
+			if type(pid) == "string" and pid ~= "" then
+				local stack = AR.Cons.inventoryAmountByDirId("Potion", pid)
+				if stack > reserve then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
 AR.Cons.SprinklerCmds = nil
 AR.Cons.failUntil = AR.Cons.failUntil or {}
 function AR.Cons.ensureSprinklerCmds()
@@ -8604,6 +8915,7 @@ local AR_CONS_TICK_PRIO = {
 	{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
 		toggleCfgKey="consumeHugeHunter",      reserveCfgKey="consumeReserveHugeHunter", idCfgKey="consumePotionIdHugeHunter" },
 }
+AR.Cons.tickPrioPotions = AR_CONS_TICK_PRIO
 
 function AR.Cons.tick()
 	if cfg().autoConsumeEnabled ~= true then
@@ -8627,8 +8939,10 @@ function AR.Cons.tick()
 		end
 	end
 	AR.Cons.ensureSprinklerCmds()
+	local cfg_t = cfg()
+	local maxActions = math.max(1, math.floor(tonumber(cfg_t.consumeMaxActionsPerTick) or 1))
+	local actionsDone = 0
 	for _, e in ipairs(AR_CONS_TICK_PRIO) do
-		local cfg_t = cfg()
 		if cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
 			local id = cfg_t[e.idCfgKey]
 			local reserve = cfg_t[e.reserveCfgKey] or 0
@@ -8642,7 +8956,10 @@ function AR.Cons.tick()
 					consumed = AR.Cons.tryConsumePotion(e.name, id, reserve)
 				end
 				if consumed then
-					return
+					actionsDone += 1
+					if actionsDone >= maxActions then
+						return
+					end
 				end
 			end
 		end

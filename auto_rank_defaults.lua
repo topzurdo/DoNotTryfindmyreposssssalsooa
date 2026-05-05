@@ -72,6 +72,13 @@ return {
 	questEggTeleportIfWrongZone = true,
 	-- Пауза pivot/hatch assist к физическому яйцу, если EggsUtil.GetEggPart вернул nil (меньше спама и кликов).
 	eggPhysicalPartMissingCooldown = 10,
+	--- Перед AttemptHatch: pivot + пауза + проверка дистанции до стойки (нет «too far» в холостую).
+	hatchRequireNearEggBeforeAttempt = true,
+	hatchMaxDistanceToEggStuds = 96,
+	--- После fail gate или AttemptHatch «too far»: не дергать progress-hatch N секунд.
+	progressHatchBackoffOnProximityFailSec = 18,
+	--- Снять hatchBusy/guard сразу при AttemptHatch false + too far (фарм/телепорты не ждут конца holdHidden).
+	hatchAbortBusyOnAttemptFail = true,
 	advancedRemoteFarm = true,
 	remoteFarmUseMaxZoneAnchor = true,
 	-- Если не удаётся телепорт на max-owned (пушка / You can't do that right now), фармить брейкаблы по текущей зоне (Tech World и т.д.).
@@ -151,7 +158,7 @@ return {
 	questConsumeIgnoreOnlyWhenNoneWhenTierForced = true,
 	questConsumeFruits = true,
 	questConsumeFruitsInterval = 1.5,
-	questConsumeFruitMaxAtOnce = 4,
+	questConsumeFruitMaxAtOnce = 20,
 	questConsumeFruitsPreferMaxTier = true,
 	autoConsumeConsumables = true,
 	autoConsumeConsumablesInterval = 2.2,
@@ -211,6 +218,8 @@ return {
 	},
 	questEquipEnchants = true,
 	questEquipEnchantInterval = 2.2,
+	--- Пока активен hatch-пайплайн: не снимать enchant «для апгрейда тира» каждый тик (меньше Unequip spam).
+	enchantsSkipTierUpgradeWhileHatchBusy = true,
 	dynamicEnchantLoadout = true,
 	enchantFarmPriority = {
 		"Coins",
@@ -459,7 +468,7 @@ return {
 
 	autoConsumeEnabled = true,
 	-- На том же hbIntervalConsumables уже идёт AR.Cons.tick (флаги/зелья по id). Legacy-квестовые зелья по тиру иначе могут сработать в том же heartbeat-движении вторым расходом.
-	consumablesLegacySkipQuestPotionsWhenAutoConsume = true,
+	consumablesLegacySkipQuestPotionsWhenAutoConsume = false,
 	consumablesTickInterval = 2,
 	consumeFlagsHasty = true,
 	consumeFlagsStrength = true,
@@ -473,17 +482,18 @@ return {
 	consumeSprinklerOnlyWhenInRadiusBelow = 10,
 	consumeSprinklerSparseMinRawTapOk = 12,
 	consumeDamagePotion = true,
-	consumeRainbow = false,
-	consumeShiny = false,
-	consumeHugeHunter = false,
+	consumeRainbow = true,
+	consumeShiny = true,
+	consumeHugeHunter = true,
+	consumeMaxActionsPerTick = 3,
 	consumeReserveHasty = 0,
 	consumeReserveStrength = 0,
 	consumeReserveMagnet = 0,
 	consumeReserveSprinkler = 0,
-	consumeReserveDamagePotion = 10,
-	consumeReserveRainbow = 20,
-	consumeReserveShiny = 20,
-	consumeReserveHugeHunter = 5,
+	consumeReserveDamagePotion = 0,
+	consumeReserveRainbow = 0,
+	consumeReserveShiny = 0,
+	consumeReserveHugeHunter = 0,
 	consumeFlagIdHasty = "Hasty Flag",
 	consumeFlagIdStrength = "Strength Flag",
 	consumeFlagIdMagnet = "Magnet Flag",
