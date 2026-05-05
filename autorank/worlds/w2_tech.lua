@@ -24,4 +24,6 @@ return {
 		local base = tonumber(n) or 0
 		return math.max(base, 4)
 	end,
+	-- После SetupEgg tech-клиент иногда отвергает Eggs_RequestPurchase без паузы — даём серверу/UI дорешать.
+	extraDelayBeforeAttemptHatchSec = 0.55,
 }

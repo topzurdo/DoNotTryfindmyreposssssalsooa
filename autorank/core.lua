@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 11
+local AUTO_RANK_RUNTIME_VERSION = 12
 
 --[[ NAV: defaults HttpGet | autorank/worlds/* profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -6771,7 +6771,26 @@ AR.ARC = (function()
 			else
 				HatchingCmds.SetupEgg(eggDir, hatchAmt)
 			end
-			HatchingCmds.AttemptHatch()
+			ensureAutoRankWorldSelection()
+			local modWorld = AutoRankWorld.active
+			local extraAH = modWorld and tonumber(modWorld.extraDelayBeforeAttemptHatchSec) or 0
+			if extraAH > 0 then
+				task.wait(extraAH)
+			end
+			local hatchOk, hatchWhy = HatchingCmds.AttemptHatch()
+			if hatchOk == false then
+				traceThrottled(
+					"hatch_attempt_failed",
+					12,
+					"hatch",
+					"AttemptHatch failed:",
+					tostring(hatchWhy),
+					"egg",
+					eggDir and eggDir._id,
+					"world",
+					modWorld and modWorld.id
+				)
+			end
 			if cfg().hideEggHatching then
 				ensureAutoRankWorldSelection()
 				local nBurst = tonumber(cfg().eggOpeningPostInvokeBurstCount)
