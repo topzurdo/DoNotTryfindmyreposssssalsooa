@@ -4,11 +4,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 local GuiService = game:GetService("GuiService")
 
+-- Кфг: getgenv().AutoRank = { … } поверх дефолтов из auto_rank_defaults.lua (readfile/HttpGet). Переопределить URL: getgenv().AutoRankDefaultsUrl.
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
+-- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
+local AUTO_RANK_RUNTIME_VERSION = 6
+
+--[[ NAV: defaults в auto_rank_defaults.lua | Net/log после merge кфг | ARQ quest | AR.ARC hatch | Farm | Heartbeat / AR.HB.tasks ]]
 
 local AR = {
-	Cfg = {},
 	Log = {},
 	Exec = {},
 	Modules = {},
@@ -26,6 +30,9 @@ local AR = {
 	CrossPlace = {},
 }
 
+-- Forward-declared: ARZone / tryTeleport reference ARQ before ARQ = {} assignment below.
+local ARQ
+
 local function pcallWrap0(f) return pcall(f) end
 local function pcallWrap1(f, a) return pcall(f, a) end
 local function pcallWrap2(f, a, b) return pcall(f, a, b) end
@@ -37,446 +44,60 @@ AR.Log.pcallWrap2 = pcallWrap2
 AR.Log.pcallWrap3 = pcallWrap3
 AR.Log.pcallWrap4 = pcallWrap4
 
-local DEFAULT = {
-	enabled = true,
-	safeMode = true,
-	farmNormalBreakables = true,
-	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest" },
-	delayDamage = 0.16,
-	farmRadius = 420,
-	preferClosest = true,
-	farmCandidateScanInterval = 0.12,
-	collectOrbs = true,
-	orbCollectInterval = 0.35,
-	maxOrbBatch = 80,
-	orbAccumulatorMaxKeys = 4000,
-	orbMagnetBoost = true,
-	orbMagnetMinDistance = 800,
-	orbRemoteCollectBatch = false,
-	autoClaimRankRewards = true,
-	claimInterval = 0.35,
-	claimDebounce = 0.28,
-	autoRankUpGui = true,
-	rankUpGuiInterval = 1.2,
-	autoDismissRankUpUi = true,
-	rankUpDismissInterval = 0.32,
-	autoDismissMasteryPerkUi = true,
-	masteryPerkDismissInterval = 0.32,
-	autoEnableAutoFarm = true,
-	autoFarmEnableInterval = 15,
-	autoFarmReenableOnZoneChange = true,
-	farmSignalNearbyEnabled = false,
-	farmMultiHitCount = 1,
-	tutorialHideGoalArrow = true,
-	tutorialArrowInterval = 2,
-	autoBuyZones = true,
-	ignoreZoneGateQuests = false,
-	zonePurchaseInterval = 0.55,
-	teleportToMaxFarmZone = true,
-	teleportMaxZoneClientPivotOnly = true,
-	teleportClientPivotWhenSameZone = false,
-	teleportClientPivotNearStuds = 32,
-	questEggTeleportClientPivotOnly = true,
-	teleportInterval = 10,
-	teleportPivotYOffset = 3,
-	teleportPivotRepeatCount = 5,
-	teleportPivotRepeatDelayFrames = 1,
-	teleportCannonWorkaround = false,
-	autoDismissRebirthUi = true,
-	rebirthDismissInterval = 0.28,
-	hatchAfterPivotDelay = 0.38,
-	hatchBusyHoldSeconds = 2.6,
-	preferZoneEggWhenProgress = true,
-	questEggTeleportIfWrongZone = true,
-	advancedRemoteFarm = true,
-	remoteFarmUseMaxZoneAnchor = true,
-	remoteFarmRadiusMultiplier = 2.4,
-	remoteFarmOrbMagnetMultiplier = 1.45,
-	remoteFarmSkipMaxZoneTeleport = false,
-	remoteFarmSkipBreakablePull = false,
-	forceTeleportWhenBehindMaxZone = true,
-	autoClickReturnToAreaButton = true,
-	returnToAreaClickInterval = 2,
-	crossPlaceAutoReload = true,
-	crossPlaceReloadUrl = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank.lua",
-	crossPlaceReloadReadfile = "",
-	crossPlaceReloadDelaySec = 3,
-	teleportToBreakableFarmCenter = true,
-	farmBreakablePullInterval = 1.15,
-	farmBreakableMinDist = 20,
-	farmBreakableYOffset = 5,
-	farmBreakableSpawnPartPriority = { "Main", "Easy", "VIP" },
-	farmExplosiveBreakableAssist = true,
-	farmExplosiveAssistInterval = 2.8,
-	farmExplosiveAssistRequireWorld2 = true,
-	farmExplosiveAssistWhenDealingDamage = true,
-	farmExplosiveAssistPullToFarmBox = true,
-	farmExplosiveAssistPreferOrder = { "TNT Crate", "TNT" },
-	questAssistEnabled = true,
-	questAssistInterval = 0.65,
-	questTeleportToTarget = true,
-	questTeleportMinDist = 14,
-	questTeleportYOffset = 6,
-	questAssistSkipFarmTeleportWhenObjective = true,
-	questBlockOnGuiTransition = false,
-	questAutoUnlockEgg = true,
-	questEggUnlockCooldown = 8,
-	questAutoHatch = true,
-	questAutoHatchAnytime = false,
-	questHatchAssistInterval = 1.1,
-	hatchClampToAffordableAmount = true,
-	hatchPreferAffordableEggInZone = true,
-	hatchPreferAffordableEggGlobally = true,
-	allowInfinityEggWithoutQuest = false,
-	infinityEggQuestKeywords = { "infinity", "infinity egg", "infinityegg" },
-	questAssistObjectiveKeywords = true,
-	questSpawnInventoryBreakables = true,
-	questSpawnInventoryBreakablesInterval = 2.75,
-	-- Не расходовать Misc, если текст цели про мировые спавны («randomly spawned», «in best area»).
-	questSpawnInventorySkipWorldSpawnObjectives = true,
-	-- Тексты целей Rank (справа) без GoalCmds — скрейп GUI.Rank / GoalsSide для Comet/Jar спавна при no_goal.
-	questScrapeRankGoalsForMiscSpawn = true,
-	questRankGoalsGuiScrapeInterval = 2.0,
-	questRankGoalsGuiScrapeMaxLabels = 320,
-	-- Синт-цели Rank→GetEnterPart (Instances): выкл. — не тянуть к Fishing/Dig-порталам, идём дальше по другим квестам.
-	questSynthRankTrackedFromGui = false,
-	-- RankGuiSynth (GetEnterPart): не Leave из инстанса и не Return-to-max, пока TTL активен.
-	questSynthRankProtectInstanceFromAutoLeave = true,
-	questSynthRankSuppressReturnToArea = true,
-	questSynthRankProtectTtlSeconds = 180,
-	questTeleportCanTeleportLogThrottleSeconds = 15,
-	autoConsumeBuffs = true,
-	autoConsumeBuffsInInstance = false,
-	questConsumePotions = true,
-	questConsumePotionsInterval = 1.35,
-	questConsumePotionsOnlyWhenNoneActive = false,
-	questConsumePotionBulk = true,
-	questConsumePotionsPreferMaxTier = true,
-	questConsumeHonorObjectivePotionTier = true,
-	-- При no_goal брать текст «Use Tier I Potions» из PlayerGui + не блокировать Use из‑за активного баффа того же типа.
-	questConsumeScrapeGuiForPotionTier = true,
-	questConsumeGuiScrapeInterval = 1.85,
-	questConsumeGuiScrapeMaxLabels = 500,
-	questConsumeBypassActiveBuffForTierForced = true,
-	questConsumeIgnoreOnlyWhenNoneWhenTierForced = true,
-	questConsumeFruits = true,
-	questConsumeFruitsInterval = 1.5,
-	questConsumeFruitMaxAtOnce = 4,
-	autoConsumeConsumables = true,
-	autoConsumeConsumablesInterval = 2.2,
-	autoConsumeConsumableBlocklist = {
-		"Mining Bomb",
-		"Mining TNT",
-		"Mining TNT Crate",
-		"Mining Nuclear TNT Crate",
-		"Mining Bejeweled TNT Crate",
-		"TNT",
-	},
-	questClickGuiTargets = true,
-	questGuiClickInterval = 0.38,
-	questPrioritizeListedGoalGenerators = true,
-	questGoalGeneratorPrioritySubstrings = {
-		"eggs",
-		"zone",
-		"unlock castle",
-		"side buttons",
-		"upgrades",
-		"instances",
-		"return to farm",
-		"use enchant",
-		"use potion",
-		"keys",
-		"trading plaza",
-		"redeem rank reward",
-		"machines",
-		"rainbow machine",
-		"rebirth shrines",
-		"egg slots",
-		"gold machine",
-		"upgrade potions machine",
-		"upgrade enchants machine",
-		"pet slots",
-		"travel to tech",
-		"travel to void",
-		"traverse void islands",
-		"traverse from void spawn",
-		"travel to fantasy",
-		"fishingevent",
-		"farmingworld",
-		"halloweenworld",
-		"placefarm",
-		"claimfarm",
-		"claimfarming",
-		"spendfarm",
-		"farmingtoken",
-		"halloweentrick",
-		"placehalloween",
-		"newhalloween",
-		"claimhalloween",
-		"castfishing",
-		"catchfish",
-		"sellfish",
-		"buyboat",
-	},
-	questEquipEnchants = true,
-	questEquipEnchantInterval = 2.2,
-	dynamicEnchantLoadout = true,
-	enchantFarmPriority = {
-		"Coins",
-		"Strong Pets",
-		"Tap Power",
-		"Criticals",
-		"Treasure Hunter",
-		"Diamonds",
-		"Magnet",
-		"Walkspeed",
-	},
-	enchantHatchPriority = {
-		"Lucky Eggs",
-		"Rainbow Eggs",
-		"Super Shiny Hunter",
-		"Shiny Hunter",
-		"Huge Hunter",
-		"Fortune",
-		"Fruity",
-	},
-	questAutoPlaceFlag = true,
-	questPlaceFlagInterval = 2,
-	questAutoPlaceFlagWithoutTrackedGoal = true,
-	questFlagNameFallbackOrder = {
-		"Strength Flag",
-		"Magnet Flag",
-		"Hasty Flag",
-		"Shiny Flag",
-		"Rainbow Flag",
-	},
-	skipEggGuiClickWhenHiddenHatch = false,
-	autoBuyEggSlots = true,
-	eggSlotPurchaseInterval = 1,
-	eggSlotMaxPurchasesPerPulse = 3,
-	eggSlotPurchaseTryUnlocked = true,
-	autoBuyEquipSlots = true,
-	equipSlotPurchaseInterval = 1,
-	equipSlotMaxPurchasesPerPulse = 3,
-	machinePurchaseFailureCooldown = 6,
-	machineNotOwnedCooldown = 30,
-	autoBuyCheapestUpgrade = true,
-	upgradePurchaseInterval = 1.5,
-	autoDaycare = true,
-	autoDaycareInterval = 20,
-	autoDaycareMaxClaimsPerTick = 1,
-	questIgnoreMinigames = true,
-	questIgnoreInstancesGenerator = false,
-	questNormalizeNilGoalPriority = true,
-	questMinigameObjectiveSubstrings = {
-		"fishing",
-		"digsite",
-		"advanced digsite",
-		"chest rush",
-		"atlantis",
-		"obby",
-		"falling",
-		"sled",
-		"woodcutting",
-		"diamond wheel",
-		"flower garden",
-		"ice obby",
-		"jungle obby",
-		"pyramid",
-		"millionaire run",
-		"easy obby",
-		"hoverboard",
-		"enchant empowering",
-	},
-	questBlockedObjectiveSubstrings = {},
-	-- AdvancedDigsite: без лопаты из Fossil merchant клиент кидает Message — спам промпта входа бессмысленен.
-	-- Валюта покупки — не Diamonds: отдельный слот HUD "Digsite" = CurrencyCmds/Get("Digsite"), копится в инстансе Digsite
-	-- (DigsiteChests / руды в __DIRECTORY, см. Currency | Digsite + DigsiteMerchant).
-	questBlockDigsiteEntryWithoutShovel = true,
-	-- Блокировать только Advanced (базовый Digsite нужен чтобы фармить Digsite coins и купить Normal Shovel).
-	questBlockAdvancedDigsiteOnlyWithoutShovel = true,
-	-- Если true: лопата "Flimsy" не считается достаточной для входа Advanced (сообщение игры про merchant).
-	questAdvancedDigsiteFlimsyShovelIsInsufficient = true,
-	questAutoLeaveBlockedInstances = true,
-	questBlockedInstanceIds = {
-		"Fishing",
-		"AdvancedFishing",
-		"FishingEvent",
-		"Digsite",
-		"AdvancedDigsite",
-		"Woodcutting",
-		"FlowerGarden",
-		"Atlantis",
-		"ChestRush",
-		"DiamondWheelInstance",
-		"SpawnObby",
-		"IceObby",
-		"JungleObby",
-		"PyramidObby",
-		"HoverboardTechObby",
-		"MillionaireRun",
-		"LuckyBlocks",
-		"EnchantEmpoweringInstance",
-		"Minefield",
-	},
-	minigameAssistMode = "skip",
-	instanceIdsForceLeave = nil,
-	-- Авто-прохождение мини-игр (obby/dig/fish/…) по умолчанию выключено — список пустой.
-	minigameAutoPlayInstanceIds = {},
-	minigameAllowQuestInstancesWhenComplete = true,
-	minigameAssistTickInterval = 0.16,
-	minigameStuckLeaveSeconds = 90,
-	minigameObbyFinishSearchDepth = 26,
-	minigameObbyFinishPartNames = { "Finish", "Reward", "Win", "Goal", "End" },
-	minigameObbyPreferCheckpointFallback = true,
-	minigameObbyTouchNearbyParts = true,
-	minigameObbyFireChildPrompts = true,
-	minigameWave2SearchDepth = 14,
-	minigameWave2MaxPromptsPerTick = 8,
-	autoHatchProgressWithoutQuest = true,
-	-- GoalCmds/FFlags nil (executor): без квестовой цели blind progress-hatch только мешает (зоны/ранги). true = старое поведение.
-	autoHatchProgressWhenGoalModulesMissing = false,
-	autoHatchProgressWhenNonEggQuest = true,
-	autoHatchProgressCooldown = 10,
-	questMachineGuiStuckMaxClicks = 22,
-	questMachineGuiStuckWindowSec = 45,
-	questMachineGuiStuckGeneratorSubstrings = {
-		"upgrade potions machine",
-		"upgrade enchants machine",
-	},
-	hatchReserveCurrencyForNextZone = true,
-	-- Если true: при progress-only вылупе НЕ резервировать монету на покупку следующей зоны (иначе hatchAmt часто 0 — «яйца не открываются»).
-	hatchReserveSkipForProgressOnly = true,
-	hatchNextZoneReserveMultiplier = 1.05,
-	hatchReserveForNextZoneEvenWhenQuestIncomplete = true,
-	hatchBusyWatchdogExtra = 10,
-	autoEquipBestPetsEnabled = true,
-	autoEquipBestPetsInterval = 14,
-	autoPickStarterPetsEnabled = true,
-	autoPickStarterPet1 = "Axolotl",
-	autoPickStarterPet2 = "Cat",
-	autoPickStarterPetsInterval = 1.5,
-	hideEggHatching = true,
-	autoClickEggOpeningPrompt = true,
-	eggOpeningOnlyWhenOpening = true,
-	eggOpeningPromptClickInterval = 0.65,
-	eggOpeningPromptIntervalHiddenHatch = 0.25,
-	eggOpeningPostInvokeBurstCount = 4,
-	eggOpeningPostInvokeBurstDelay = 0.12,
-	eggOpeningPromptCenterFallback = false,
-	eggOpeningGuiScanInterval = 0.22,
-	pivotBeforeRemotePurchases = true,
-	machineSearchRadius = 2500,
-	machineTeleportYOffset = 6,
-	hatchTeleportNearEgg = true,
-	hatchEggProximity = 36,
-	hatchEggPivotYOffset = 8,
-	autoCloseMachineTabs = true,
-	autoCloseTabDelay = 0.22,
-	autoCloseMachineTabIds = nil,
-	autoCloseTabUseForce = false,
-	executorGuiClickFallbacks = true,
-	questUseFireClickDetector = false,
-	questUseFireTouchInterest = false,
-	questTravelWorldDirectNetwork = true,
-	questTravelWorldDirectNetworkInterval = 2.6,
-	questTravelTechRequireRebirth4 = true,
-	-- Если после RequestTechRocket остаёмся в основном мире без IsTeleportingWorld2 — позже повторяем удалёнку + триггер ракеты Rainbow Road.
-	questTravelTechRetryEnabled = true,
-	questTravelTechRetryStuckAfterSec = 7,
-	questTravelTechRetryEverySec = 4.5,
-	questTravelTechRetryMaxAttempts = 12,
-	-- GoalCmds в экзекьюторе часто даёт no_goal без tracked — при уже max зоне W1 и Rainbow Road давим RequestTechRocket + ракету.
-	questTravelTechWhenNoGoalEnabled = true,
-	questTravelTechWhenNoGoalInterval = 10,
-	questTravelTechWhenNoGoalRequireRainbowRoad = true,
-	farmUseFireClickDetectorFallback = false,
-	debugLogInvokes = false,
-	kickGuardTryBlockClientKick = true,
-	kickGuardKickLog = true,
-	kickGuardBlockTeleportToLobby = false,
-	kickGuardBlockTeleportToPlaceIds = {},
-	executorVirtualGuiClick = false,
-	log = false,
-	verboseLog = true,
-	fileLogEnabled = true,
-	fileLogPath = "AutoRank_debug.log",
-	fileLogResetOnStart = true,
-	fileLogVerbose = true,
-	traceInterval = 4,
-	ensureModulesInterval = 0.35,
-	ensureModulesInitialDelaySec = 3,
-	heartbeatErrorWarn = true,
+-- Дефолты кфг: auto_rank_defaults.lua (readfile) или HttpGet. URL: getgenv().AutoRankDefaultsUrl либо fallback (тот же репо, что crossPlaceReload).
+local AUTO_RANK_DEFAULTS_URL_FALLBACK = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank_defaults.lua"
 
-	disableBuiltInAutoTapper = true,
-	disableBuiltInAutoTapperInterval = 2.0,
+local function loadAutoRankInternalDefaults()
+	local g0 = (getgenv and getgenv()) or _G
+	local urlOverride = rawget(g0, "AutoRankDefaultsUrl")
+	local function fromReadfile()
+		if not (readfile and isfile and loadstring) then
+			return nil
+		end
+		for _, path in ipairs({ "auto_rank_defaults.lua" }) do
+			if isfile(path) then
+				local ok, chunk = pcall(readfile, path)
+				if ok and type(chunk) == "string" and #chunk > 0 then
+					local f = loadstring(chunk, "@" .. path)
+					if f then
+						local ok2, t = pcall(f)
+						if ok2 and type(t) == "table" then
+							return t
+						end
+					end
+				end
+			end
+		end
+		return nil
+	end
+	local t = fromReadfile()
+	if t then
+		return t
+	end
+	local url = urlOverride
+	if type(url) ~= "string" or url == "" then
+		url = AUTO_RANK_DEFAULTS_URL_FALLBACK
+	end
+	local ok, body = pcall(function()
+		return game:HttpGet(url, true)
+	end)
+	if ok and type(body) == "string" and #body > 0 and loadstring then
+		local f = loadstring(body, "@AutoRankDefaults")
+		if f then
+			local ok2, res = pcall(f)
+			if ok2 and type(res) == "table" then
+				return res
+			end
+		end
+	end
+	error("[AutoRank] Не удалось загрузить auto_rank_defaults.lua (readfile или HttpGet).")
+end
 
-	autoRedeemFreeGifts = true,
-	freeGiftsCheckInterval = 2,
-	freeGiftsMaxClaimsPerTick = 12,
-
-	autoOpenInstantLootboxes = true,
-	autoOpenNonInstantLootboxes = false,
-	lootboxOpenInterval = 1.5,
-	lootboxBatchAmount = 25,
-
-	autoConsumeEnabled = true,
-	consumablesTickInterval = 2,
-	consumeFlagsHasty = true,
-	consumeFlagsStrength = true,
-	consumeFlagsMagnet = true,
-	consumeSprinklers = true,
-	consumeDamagePotion = true,
-	consumeRainbow = false,
-	consumeShiny = false,
-	consumeHugeHunter = false,
-	consumeReserveHasty = 0,
-	consumeReserveStrength = 0,
-	consumeReserveMagnet = 0,
-	consumeReserveSprinkler = 0,
-	consumeReserveDamagePotion = 10,
-	consumeReserveRainbow = 20,
-	consumeReserveShiny = 20,
-	consumeReserveHugeHunter = 5,
-	consumeFlagIdHasty = "Hasty Flag",
-	consumeFlagIdStrength = "Strength Flag",
-	consumeFlagIdMagnet = "Magnet Flag",
-	consumeSprinklerId = "Breakable Sprinkler",
-	consumePotionIdDamage = "Damage Potion",
-	consumePotionIdRainbow = "Rainbow Potion",
-	consumePotionIdShiny = "Shiny Potion",
-	consumePotionIdHugeHunter = "Huge Hunter Potion",
-	consumeTrustServerInventory = false,
-	consumeFailureCooldown = 8,
-	consumeDebugLog = false,
-
-	netRateLimitEnabled = true,
-	netRateLimitPerSec = 18,
-	netRateLimitWindow = 1.0,
-	netRateLimitDefaultPriority = 5,
-	netRateLimitFarmPriority = 1,
-	netRateLimitPurchasePriority = 10,
-
-	petsAlwaysFarmEnabled = true,
-	petsAlwaysFarmTickInterval = 8.0,
-	petsAlwaysFarmListenForceDisable = true,
-
-	hbSchedulerEnabled = true,
-	hbIntervalDealDamage = 0,
-	hbIntervalDismissUI = 0.32,
-	hbIntervalAutoBuy = 0.5,
-	hbIntervalEquipPets = 2.0,
-	hbIntervalConsumables = 2.0,
-	hbIntervalFreeRewards = 2,
-	hbIntervalLootbox = 1.5,
-	hbIntervalQuestAssist = 0.65,
-	hbIntervalAutoFarmEnable = 1.0,
-	hbIntervalEnsureModules = 0.35,
-}
+local INTERNAL_DEFAULTS = loadAutoRankInternalDefaults()
 
 local G = (getgenv and getgenv()) or _G
 G.AutoRank = G.AutoRank or {}
-for k, v in pairs(DEFAULT) do
+for k, v in pairs(INTERNAL_DEFAULTS) do
 	if G.AutoRank[k] == nil then
 		G.AutoRank[k] = v
 	end
@@ -497,20 +118,58 @@ if G.AutoRank.safeMode ~= false then
 	G.AutoRank.hbIntervalConsumables = math.max(0.75, math.min(tonumber(G.AutoRank.hbIntervalConsumables) or 2, 2))
 	G.AutoRank.consumeDebugLog = false
 	G.AutoRank.eggOpeningPromptClickInterval = math.max(tonumber(G.AutoRank.eggOpeningPromptClickInterval) or 0.65, 0.65)
-	G.AutoRank.eggOpeningPostInvokeBurstCount = math.min(tonumber(G.AutoRank.eggOpeningPostInvokeBurstCount) or 4, 4)
+	G.AutoRank.eggOpeningPostInvokeBurstCount = math.min(tonumber(G.AutoRank.eggOpeningPostInvokeBurstCount) or 1, 2)
 	G.AutoRank.autoPickStarterPetsInterval = math.max(tonumber(G.AutoRank.autoPickStarterPetsInterval) or 1.5, 1.5)
 	G.AutoRank.petsAlwaysFarmTickInterval = math.max(tonumber(G.AutoRank.petsAlwaysFarmTickInterval) or 8, 8)
 	G.AutoRank.autoFarmEnableInterval = math.max(tonumber(G.AutoRank.autoFarmEnableInterval) or 15, 15)
 	G.AutoRank.consumeTrustServerInventory = false
+	G.AutoRank.hatchMaxBatchAllowed = math.min(tonumber(G.AutoRank.hatchMaxBatchAllowed) or 10, 3)
 end
 
---[[ GoalCmds callbacks often fail in executor ("Cannot require …"); tracked quest stays nil.
-   Old safeMode forced autoHatchProgressWithoutQuest=false → no hatch at all. One-time bump for existing saves.]]
+-- Одноразовые миграции старых getgenv().AutoRank
 do
 	local v = G.AutoRank._arNoQuestHatchMigrate or 0
 	if v < 1 then
 		G.AutoRank.autoHatchProgressWithoutQuest = true
 		G.AutoRank._arNoQuestHatchMigrate = 1
+	end
+end
+do
+	local v = G.AutoRank._arNonEggProgressHatchMigrate or 0
+	if v < 1 then
+		G.AutoRank.autoHatchProgressWhenNonEggQuest = false
+		G.AutoRank._arNonEggProgressHatchMigrate = 1
+	end
+end
+do
+	local v = G.AutoRank._arEconomyHatchBuffsV1 or 0
+	if v < 1 then
+		G.AutoRank.hatchReserveSkipForProgressOnly = false
+		G.AutoRank.questConsumeScrapedPotionTierExactMatch = false
+		G.AutoRank.questConsumeFruitsPreferMaxTier = true
+		G.AutoRank._arEconomyHatchBuffsV1 = 1
+	end
+end
+do
+	local v = G.AutoRank._arEconomyHatchBuffsV2 or 0
+	if v < 1 then
+		G.AutoRank.hatchProgressTryCheaperEggWhenReserveBlocks = true
+		G.AutoRank.hatchProgressFallbackEggMaxOwnedZoneOnly = true
+		G.AutoRank.hatchAsyncGuardClearWithHatchBusyEarlyRelease = true
+		G.AutoRank.miscGiftBagAssertionFailureCooldownSec = 300
+		G.AutoRank._arEconomyHatchBuffsV2 = 1
+	end
+end
+do
+	local v = G.AutoRank._arEggOpeningUiMigrate or 0
+	if v < 1 then
+		-- Глобальный Mouse.Button1Down по всем коннекшенам ломал чужой UI; бандлы во время hatch давали GiftBag assertion.
+		G.AutoRank.skipEggGuiClickWhenHiddenHatch = true
+		G.AutoRank.eggOpeningPreferGuiButtonOverSyntheticMouse = true
+		if G.AutoRank.safeMode ~= false then
+			G.AutoRank.eggOpeningPostInvokeBurstCount = math.min(tonumber(G.AutoRank.eggOpeningPostInvokeBurstCount) or 1, 2)
+		end
+		G.AutoRank._arEggOpeningUiMigrate = 1
 	end
 end
 
@@ -762,6 +421,7 @@ local DaycareCmds, DaycareLoot
 local FlexibleFlagCmds
 local MasteryCmds, ConsumableCmds
 local AutoFarmCmds, Signal
+local RandomEventCmds
 
 local function safeIsInInstance(instanceId)
 	if not InstancingCmds or type(InstancingCmds.IsInInstance) ~= "function" then
@@ -1047,6 +707,7 @@ local function ensureModules()
 		MasteryCmds = MasteryCmds or cacheReq(Client:WaitForChild("MasteryCmds"))
 		ConsumableCmds = ConsumableCmds or cacheReq(Client:WaitForChild("ConsumableCmds"))
 		AutoFarmCmds = AutoFarmCmds or cacheReq(Client:WaitForChild("AutoFarmCmds"))
+		RandomEventCmds = RandomEventCmds or cacheReq(Client:WaitForChild("RandomEventCmds"))
 		Signal = Signal or cacheReq(ReplicatedStorage.Library:WaitForChild("Signal"))
 	end)
 	if not ok then
@@ -1187,13 +848,60 @@ Ticks.lastQuestSpawnInventoryBreakTick = 0
 Ticks.lastBuiltInAutoTapperTick = 0
 Ticks.lastFreeGiftsTick = 0
 Ticks.lastLootboxTick = 0
+Ticks.lastMiscGiftBagOpenTick = 0
+Ticks.miscGiftBagGlobalQuietUntil = 0
+Ticks.eggPhysicalPartMissUntil = {}
 Ticks.lastConsTick = 0
 Ticks.lastConsFailPruneTick = 0
 Ticks.progressOnlyHatchDisabledAt = 0
+Ticks.hatchAsyncGuardUntil = 0
 Ticks.hb = {}
 local hatchBusy = false
 local hatchBusyArmedAt = 0
+local hatchBusyArmedForSec = 2.6
 local hatchBusyToken = 0
+-- Заполняется после объявления AutoRankRuntimeState.runQuestAssistPulse — отложенный пульс после снятия hatchBusy.
+local scheduleQuestAssistPulseAfterHatchBusy = nil
+
+local function tryHatchBusyReleaseIfIdle(reason, armedToken)
+	if cfg().hatchBusyEarlyRelease == false then
+		return
+	end
+	if armedToken ~= nil and armedToken ~= hatchBusyToken then
+		return
+	end
+	if not hatchBusy then
+		return
+	end
+	local opening = false
+	pcall(function()
+		opening = Variables and (
+			Variables.OpeningEgg == true
+			or (type(Variables.OpeningEgg) == "number" and Variables.OpeningEgg > 0)
+		)
+	end)
+	local hci = false
+	if HatchingCmds and type(HatchingCmds.IsHatching) == "function" then
+		pcall(function()
+			hci = HatchingCmds.IsHatching() == true
+		end)
+	end
+	if opening or hci then
+		return
+	end
+	hatchBusy = false
+	hatchBusyArmedAt = 0
+	traceThrottled("hatch_busy_early_release", 10, "hatch", "hatchBusy cleared (idle OpeningEgg/HatchingCmds)", reason)
+	if cfg().hatchAsyncGuardClearWithHatchBusyEarlyRelease ~= false then
+		local g = Ticks.hatchAsyncGuardUntil
+		if type(g) == "number" and tick() < g then
+			Ticks.hatchAsyncGuardUntil = 0
+		end
+	end
+	if type(scheduleQuestAssistPulseAfterHatchBusy) == "function" then
+		scheduleQuestAssistPulseAfterHatchBusy()
+	end
+end
 
 local function armHatchBusyEnd(delaySec)
 	hatchBusy = true
@@ -1201,6 +909,7 @@ local function armHatchBusyEnd(delaySec)
 	hatchBusyToken += 1
 	local token = hatchBusyToken
 	local d = delaySec or cfg().hatchBusyHoldSeconds or 2.6
+	hatchBusyArmedForSec = d
 	task.delay(d, function()
 		if token ~= hatchBusyToken then
 			return
@@ -1210,6 +919,48 @@ local function armHatchBusyEnd(delaySec)
 	end)
 end
 
+--- Сбросить «длинный» hatchBusy до истечения holdPipeline, если клиент уже не в состоянии открытия яйца.
+local function scheduleHatchBusyEarlyRelease(armedToken)
+	if cfg().hatchBusyEarlyRelease == false then
+		return
+	end
+	local minDelay = tonumber(cfg().hatchBusyEarlyReleaseMinDelay) or 0.55
+	local maxWait = tonumber(cfg().hatchBusyEarlyReleaseMaxWait) or 24
+	local poll = tonumber(cfg().hatchBusyEarlyReleasePoll) or 0.22
+	task.spawn(function()
+		task.wait(minDelay)
+		local deadline = tick() + maxWait
+		while tick() < deadline do
+			if armedToken ~= hatchBusyToken then
+				return
+			end
+			tryHatchBusyReleaseIfIdle("early_poll", armedToken)
+			if armedToken ~= hatchBusyToken or not hatchBusy then
+				return
+			end
+			task.wait(poll)
+		end
+	end)
+end
+
+local function hatchAsyncPipelineActive()
+	return hatchBusy or (type(Ticks.hatchAsyncGuardUntil) == "number" and tick() < Ticks.hatchAsyncGuardUntil)
+end
+
+local function hatchSequenceBlocksWorldTeleport()
+	if hatchAsyncPipelineActive() then
+		return true
+	end
+	local oe = false
+	pcall(function()
+		oe = Variables and (
+			Variables.OpeningEgg == true
+			or (type(Variables.OpeningEgg) == "number" and Variables.OpeningEgg > 0)
+		)
+	end)
+	return oe == true
+end
+
 local function tryHatchBusyWatchdog()
 	if not hatchBusy or hatchBusyArmedAt <= 0 then
 		return
@@ -1217,20 +968,29 @@ local function tryHatchBusyWatchdog()
 	if cfg().hatchBusyWatchdogExtra == false then
 		return
 	end
-	local grace = cfg().hatchBusyWatchdogExtra
-	if type(grace) ~= "number" or grace < 0 then
-		grace = 8
+	local extra = cfg().hatchBusyWatchdogExtra
+	if type(extra) ~= "number" or extra < 0 then
+		extra = 8
 	end
-	local limit = (cfg().hatchBusyHoldSeconds or 2.6) + grace
+	local hidden = tonumber(cfg().hatchBusyHoldSecondsHidden) or 14
+	local limit = hidden + extra
 	if tick() - hatchBusyArmedAt <= limit then
 		return
 	end
 	hatchBusy = false
 	hatchBusyArmedAt = 0
 	traceThrottled("hatchBusyWatchdog", 6, "pulse", "hatchBusy watchdog cleared after", limit, "s")
+	if cfg().hatchAsyncGuardClearWithHatchBusyEarlyRelease ~= false then
+		local g = Ticks.hatchAsyncGuardUntil
+		if type(g) == "number" and tick() < g then
+			Ticks.hatchAsyncGuardUntil = 0
+		end
+	end
+	if type(scheduleQuestAssistPulseAfterHatchBusy) == "function" then
+		scheduleQuestAssistPulseAfterHatchBusy()
+	end
 end
 
-local AUTO_RANK_RUNTIME_VERSION = 3
 local AutoRankRuntimeState = {
 	version = AUTO_RANK_RUNTIME_VERSION,
 	connections = {},
@@ -1266,6 +1026,7 @@ local function autoRankDisconnectAll()
 	cachedTrackedObjectiveZone = nil
 	ensureModulesCachedOk = false
 	Ticks.lastEnsureModulesHeartbeatTick = 0
+	Ticks.hatchAsyncGuardUntil = 0
 	if type(restoreRuntimeHooks) == "function" then
 		pcall(restoreRuntimeHooks)
 	end
@@ -2623,6 +2384,9 @@ function ARZone.tryAutoBuyInstanceZone()
 	if not safeIsInInstance() then
 		return
 	end
+	if ARQ.hasActiveRandomEventBlockingInstanceProgress() then
+		return
+	end
 	local now = tick()
 	if now - Ticks.lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
 		return
@@ -2727,6 +2491,9 @@ function ARZone.tryAutoBuyMainZone()
 		return
 	end
 	if safeIsInInstance() then
+		return
+	end
+	if ARQ.hasActiveRandomEventBlockingZoneProgress() then
 		return
 	end
 	local now = tick()
@@ -2968,7 +2735,7 @@ end
 
 function ARUI.tryClickEggOpeningPrompt(opts)
 	opts = type(opts) == "table" and opts or {}
-	if cfg().hideEggHatching and cfg().skipEggGuiClickWhenHiddenHatch ~= false then
+	if cfg().hideEggHatching and cfg().skipEggGuiClickWhenHiddenHatch ~= false and not opts.ignoreThrottles then
 		return
 	end
 	if cfg().autoClickEggOpeningPrompt == false then
@@ -3034,12 +2801,21 @@ function ARUI.tryClickEggOpeningPrompt(opts)
 	end
 	Ticks.lastEggOpeningPromptTick = now
 
+	local preferGui = cfg().eggOpeningPreferGuiButtonOverSyntheticMouse ~= false
+	if preferGui and type(matchLabel) == "userdata" and matchLabel.Parent then
+		local btn = ARUI.resolveOverlayGuiButton(matchLabel)
+		if btn and clickGuiButtonRobust(btn) then
+			log("egg Click-to-open GUI", btn:GetFullName())
+			return
+		end
+	end
+
 	if tryFireEggOpenPrimaryInput() then
 		log("egg open primary (Mouse.Button1Down)")
 		return
 	end
 
-	if type(matchLabel) == "userdata" and matchLabel.Parent then
+	if not preferGui and type(matchLabel) == "userdata" and matchLabel.Parent then
 		local btn = ARUI.resolveOverlayGuiButton(matchLabel)
 		if btn and clickGuiButtonRobust(btn) then
 			log("egg Click-to-open GUI", btn:GetFullName())
@@ -3048,7 +2824,7 @@ function ARUI.tryClickEggOpeningPrompt(opts)
 end
 
 function ARUI.tryClickReturnToMaxAreaButton()
-	if not cfg().autoClickReturnToAreaButton or hatchBusy then
+	if not cfg().autoClickReturnToAreaButton or hatchSequenceBlocksWorldTeleport() then
 		return
 	end
 	if cfg().questSynthRankSuppressReturnToArea ~= false then
@@ -3693,9 +3469,15 @@ function QuestAssist.resolvePotionQuestTargetTier(tracked)
 	if type(fromTr) == "number" then
 		return fromTr
 	end
+	if cfg().questConsumeScrapeGuiForPotionTier == false then
+		return nil
+	end
 	local scraped = QuestAssist.scrapePlayerGuiPotionQuestBlob()
 	if scraped ~= "" then
-		return QuestAssist.potionTierHintFromObjectiveBlob(scraped)
+		local fromScrape = QuestAssist.potionTierHintFromObjectiveBlob(scraped)
+		if type(fromScrape) == "number" and cfg().questConsumeScrapedPotionTierExactMatch ~= false then
+			return fromScrape
+		end
 	end
 	return nil
 end
@@ -3918,9 +3700,126 @@ function QuestAssist.tryKeywordCooldownReset(tracked)
 	end
 end
 
-local ARQ = {}
+ARQ = {}
+ARQ.giftBagAssertBackoff = ARQ.giftBagAssertBackoff or {}
+ARQ.giftBagSessionAbandoned = ARQ.giftBagSessionAbandoned or {}
+ARQ.giftBagRateLimit = ARQ.giftBagRateLimit or {}
 -- GoalCmds no_goal: всё равно матчится isTravelToTech… + RequestTechRocket (синт имя без GUI).
 ARQ.SYNTH_GENERATOR_TRAVEL_TECH_NOGOAL = "##AutoRank_TravelTech_NoGoal##"
+
+-- RandomEvents.ParentType (см. ReplicatedStorage.Library.Types.RandomEvents)
+local ARQ_RANDOM_EVENT_PARENT_ZONE = 1
+local ARQ_RANDOM_EVENT_PARENT_INSTANCE = 2
+
+function ARQ.randomEventIdBlocksZoneProgress(evId)
+	if type(evId) ~= "string" then
+		return false
+	end
+	local list = cfg().blockZoneProgressRandomEventIds
+	if type(list) ~= "table" then
+		return false
+	end
+	for _, id in ipairs(list) do
+		if id == evId then
+			return true
+		end
+	end
+	return false
+end
+
+function ARQ.hasActiveRandomEventBlockingZoneProgress()
+	if cfg().blockZoneProgressWhileRandomEventActive == false then
+		return false
+	end
+	if safeIsInInstance() then
+		return false
+	end
+	if not RandomEventCmds or type(RandomEventCmds.GetActive) ~= "function" or type(RandomEventCmds.GetTimeRemaining) ~= "function" then
+		return false
+	end
+	local cur = safeCurrentZone()
+	if type(cur) ~= "string" or cur == "" then
+		return false
+	end
+	local act = RandomEventCmds.GetActive()
+	if type(act) ~= "table" then
+		return false
+	end
+	for _, ev in pairs(act) do
+		if type(ev) == "table" and ARQ.randomEventIdBlocksZoneProgress(ev.id) then
+			if ev.parentType == ARQ_RANDOM_EVENT_PARENT_ZONE and type(ev.parentID) == "string" and AR.zonesIdMatch(ev.parentID, cur) then
+				local tr = 0
+				pcall(function()
+					tr = RandomEventCmds.GetTimeRemaining(ev)
+				end)
+				if type(tr) == "number" and tr > 0 then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+function ARQ.hasActiveRandomEventBlockingInstanceProgress()
+	if cfg().blockZoneProgressWhileRandomEventActive == false then
+		return false
+	end
+	local inInst, okIn = safeIsInInstance()
+	if not okIn or not inInst then
+		return false
+	end
+	if not RandomEventCmds or type(RandomEventCmds.GetActive) ~= "function" or type(RandomEventCmds.GetTimeRemaining) ~= "function" then
+		return false
+	end
+	local inst = InstancingCmds and InstancingCmds.Get and InstancingCmds.Get()
+	local iid = inst and inst.instanceID
+	if type(iid) ~= "string" or iid == "" then
+		return false
+	end
+	local act = RandomEventCmds.GetActive()
+	if type(act) ~= "table" then
+		return false
+	end
+	for _, ev in pairs(act) do
+		if type(ev) == "table" and ARQ.randomEventIdBlocksZoneProgress(ev.id) then
+			if ev.parentType == ARQ_RANDOM_EVENT_PARENT_INSTANCE and type(ev.parentID) == "string" and ev.parentID == iid then
+				local tr = 0
+				pcall(function()
+					tr = RandomEventCmds.GetTimeRemaining(ev)
+				end)
+				if type(tr) == "number" and tr > 0 then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+function ARQ.miscSpawnFailureShouldCooldown(errMsg)
+	local errLow = string.lower(tostring(errMsg or ""))
+	if errLow == "" then
+		return false
+	end
+	-- Сервер часто отвечает вариациями «уже что-то в зоне» — без cooldown спамятся все *_Spawn.
+	if string.find(errLow, "already something", 1, true) then
+		return true
+	end
+	if string.find(errLow, "there is already", 1, true) then
+		return true
+	end
+	if string.find(errLow, "already in this area", 1, true) then
+		return true
+	end
+	if string.find(errLow, "something in this area", 1, true) then
+		return true
+	end
+	if string.find(errLow, "not enough room", 1, true) or string.find(errLow, "no room", 1, true) then
+		return true
+	end
+	return false
+end
 
 function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 	if cfg().questSpawnInventoryBreakables == false then
@@ -3944,7 +3843,13 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		return
 	end
 	if cfg().questSpawnInventorySkipWorldSpawnObjectives ~= false then
-		if string.find(blob, "randomly spawned", 1, true) or string.find(blob, "in best area", 1, true) then
+		local invJarCue = string.find(blob, "coin jar", 1, true)
+			or string.find(blob, "item jar", 1, true)
+		if string.find(blob, "randomly spawned", 1, true) and not invJarCue then
+			return
+		end
+		-- «in best area» относится к мировым спавнам; цели вида «coin jars in best area» как раз требуют CoinJar из инвентаря здесь.
+		if string.find(blob, "in best area", 1, true) and not invJarCue then
 			return
 		end
 	end
@@ -3956,6 +3861,8 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 	local function miscStackN(data)
 		return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
 	end
+	-- Для нескольких id порядок выбора = порядок первого совпадения при обходе pairs(Misc) (нестабилен).
+	-- Несколько tier'ов одной механики — только через miscUidForPreferredIds / явный ipairs по id.
 	local function miscUidForIds(ids)
 		local want = {}
 		for _, id in ipairs(ids) do
@@ -3964,6 +3871,17 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		for uid, data in pairs(s.Inventory.Misc) do
 			if type(uid) == "string" and type(data) == "table" and want[data.id] and miscStackN(data) >= 1 then
 				return uid
+			end
+		end
+		return nil
+	end
+	-- Явный порядок tier'ов (pairs по инвентарю иначе даёт случайный выбор — часто Giant Coin Jar).
+	local function miscUidForPreferredIds(preferredOrder)
+		for _, wantId in ipairs(preferredOrder) do
+			for uid, data in pairs(s.Inventory.Misc) do
+				if type(uid) == "string" and type(data) == "table" and data.id == wantId and miscStackN(data) >= 1 then
+					return uid
+				end
 			end
 		end
 		return nil
@@ -3985,6 +3903,11 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 			)
 			return true
 		end
+		if ARQ.miscSpawnFailureShouldCooldown(b) then
+			Ticks.lastQuestSpawnInventoryBreakTick = now
+			traceThrottled("misc_spawn_area_busy_" .. tostring(remote), 12, "pulse.quest", remote, "area busy, backoff", b)
+			return false
+		end
 		if cfg().verboseLog then
 			traceThrottled("misc_spawn_fail_" .. tostring(remote), 10, "pulse.quest", remote, "fail", a, b, detail)
 		end
@@ -4001,7 +3924,7 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 	end
 	if string.find(blob, "coin jar", 1, true) then
-		local uid = miscUidForIds({ "Basic Coin Jar", "Magic Coin Jar", "Giant Coin Jar" })
+		local uid = miscUidForPreferredIds({ "Basic Coin Jar", "Magic Coin Jar", "Giant Coin Jar" })
 		if uid and try("CoinJar_Spawn", "coin jar", uid) then
 			return
 		end
@@ -4027,6 +3950,193 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 	if string.find(blob, "lucky block", 1, true) or string.find(blob, "luckyblock", 1, true) then
 		local uid = miscUidForIds({ "Mini Lucky Block" })
 		if uid and try("MiniLuckyBlock_Consume", "mini lucky block", uid) then
+			return
+		end
+	end
+end
+
+-- Клиент ActionMenu: часть предметов — GiftBag_Open(name), часть — GiftBag_Open(name, uid), бандлы часто сначала name-only, затем name+uid.
+local ARQ_GIFTBAG_OPEN_NAME_ONLY = {
+	["Mini Chest"] = true,
+	["Rainbow Mini Chest"] = true,
+	["Global Event Gift"] = true,
+	["Diamond Gift Bag"] = true,
+	["Charm Stone"] = true,
+	["Seed Bag"] = true,
+}
+-- Studio: Large Gift Bag / Gift Bag — второй аргумент uid.
+local ARQ_GIFTBAG_OPEN_NAME_AND_UID = {
+	["Large Gift Bag"] = true,
+	["Gift Bag"] = true,
+}
+
+local function giftBagMiscStackN(data)
+	if type(data) ~= "table" then
+		return 0
+	end
+	return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+end
+
+local function giftBagErrIsAssertion(err)
+	return string.find(tostring(err or ""), "assertion", 1, true) ~= nil
+end
+
+local function giftBagErrIsTooFast(err)
+	return string.find(string.lower(tostring(err or "")), "too fast", 1, true) ~= nil
+end
+
+function ARQ.giftBagTryOpenOne(pickId, pickUid, beforeAmt)
+	local attempts = {}
+	if ARQ_GIFTBAG_OPEN_NAME_ONLY[pickId] then
+		attempts[1] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId)
+		end
+	elseif ARQ_GIFTBAG_OPEN_NAME_AND_UID[pickId] then
+		attempts[1] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId, pickUid)
+		end
+	else
+		attempts[1] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId)
+		end
+		attempts[2] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId, pickUid)
+		end
+	end
+	local lastR, lastE = nil, nil
+	for i = 1, #attempts do
+		local fn = attempts[i]
+		if fn then
+			lastR, lastE = fn()
+			local s2 = Save and Save.Get and Save.Get()
+			local row = s2 and s2.Inventory and s2.Inventory.Misc and s2.Inventory.Misc[pickUid]
+			local afterAmt = row and giftBagMiscStackN(row) or 0
+			if beforeAmt > afterAmt or (beforeAmt >= 1 and row == nil) then
+				return true, lastR, lastE, i
+			end
+			if lastR ~= nil and lastR ~= false then
+				return true, lastR, lastE, i
+			end
+		end
+	end
+	return false, lastR, lastE, 0
+end
+
+function ARQ.tryAutoOpenMiscGiftBags()
+	if cfg().autoOpenMiscGiftBags ~= true or not Network or not Save or not Save.Get then
+		return
+	end
+	if hatchSequenceBlocksWorldTeleport() then
+		return
+	end
+	local now = tick()
+	if now < (Ticks.miscGiftBagGlobalQuietUntil or 0) then
+		return
+	end
+	local iv = math.max(0.35, tonumber(cfg().autoOpenMiscGiftBagsInterval) or 4)
+	if now - (Ticks.lastMiscGiftBagOpenTick or 0) < iv then
+		return
+	end
+	local ids = cfg().autoOpenMiscGiftBagIds
+	if type(ids) ~= "table" then
+		Ticks.lastMiscGiftBagOpenTick = now
+		return
+	end
+	local want = {}
+	for _, id in ipairs(ids) do
+		if type(id) == "string" then
+			want[id] = true
+		end
+	end
+	if next(want) == nil then
+		Ticks.lastMiscGiftBagOpenTick = now
+		return
+	end
+	local maxN = math.max(1, math.floor(tonumber(cfg().autoOpenMiscGiftBagsMaxPerTick) or 2))
+	for _ = 1, maxN do
+		local s = Save.Get()
+		if not s or type(s.Inventory) ~= "table" or type(s.Inventory.Misc) ~= "table" then
+			Ticks.lastMiscGiftBagOpenTick = now
+			return
+		end
+		local pickUid, pickId, beforeAmt = nil, nil, 0
+		for uid, data in pairs(s.Inventory.Misc) do
+			if type(uid) == "string" and type(data) == "table" and type(data.id) == "string" and want[data.id] then
+				local skipUid = false
+				if ARQ.giftBagSessionAbandoned[uid] then
+					skipUid = true
+				end
+				local ab = ARQ.giftBagAssertBackoff[uid]
+				if not skipUid and type(ab) == "table" and type(ab.untilT) == "number" and ab.untilT > now then
+					skipUid = true
+				end
+				local rl = ARQ.giftBagRateLimit[uid]
+				if not skipUid and type(rl) == "table" and type(rl.untilT) == "number" and rl.untilT > now then
+					skipUid = true
+				end
+				if not skipUid then
+					local n = giftBagMiscStackN(data)
+					if n >= 1 then
+						pickUid, pickId, beforeAmt = uid, data.id, n
+						break
+					end
+				end
+			end
+		end
+		if not pickUid or not pickId then
+			Ticks.lastMiscGiftBagOpenTick = now
+			return
+		end
+		local opened, lastR, lastE, stage = ARQ.giftBagTryOpenOne(pickId, pickUid, beforeAmt)
+		Ticks.lastMiscGiftBagOpenTick = now
+		log("GiftBag_Open auto", pickId, pickUid, "opened=", opened, "stage=", stage, "r=", lastR, "err=", lastE, "amt=", beforeAmt)
+		if opened then
+			ARQ.giftBagAssertBackoff[pickUid] = nil
+			ARQ.giftBagSessionAbandoned[pickUid] = nil
+			local rl = ARQ.giftBagRateLimit[pickUid]
+			if type(rl) == "table" then
+				local baseIv = math.max(0.35, tonumber(cfg().autoOpenMiscGiftBagsInterval) or 4)
+				local decay = tonumber(cfg().giftBagTooFastSuccessDecay) or 0.85
+				local baseD = tonumber(cfg().giftBagTooFastBaseDelaySec) or 1.5
+				rl.delay = math.max(baseIv * 0.35, (rl.delay or baseD) * decay)
+				if rl.delay <= baseIv * 0.95 then
+					ARQ.giftBagRateLimit[pickUid] = nil
+				else
+					rl.untilT = nil
+				end
+			end
+		else
+			if giftBagErrIsAssertion(lastE) then
+				local steps = cfg().giftBagAssertionBackoffSeconds
+				if type(steps) ~= "table" or #steps == 0 then
+					steps = { 30, 60, 120, 300 }
+				end
+				local maxR = math.max(1, math.floor(tonumber(cfg().giftBagAssertionMaxRetriesPerSession) or 5))
+				local st = ARQ.giftBagAssertBackoff[pickUid] or { fails = 0 }
+				st.fails = (tonumber(st.fails) or 0) + 1
+				if st.fails >= maxR then
+					ARQ.giftBagSessionAbandoned[pickUid] = true
+					ARQ.giftBagAssertBackoff[pickUid] = nil
+					traceThrottled("gift_bag_abandon", 20, "log", "GiftBag_Open abandon uid after assertions", pickUid, pickId, "fails", st.fails)
+				else
+					local idx = math.min(st.fails, #steps)
+					local sec = tonumber(steps[idx]) or 30
+					st.untilT = now + sec
+					ARQ.giftBagAssertBackoff[pickUid] = st
+					traceThrottled("gift_bag_assert_backoff", 18, "log", "GiftBag_Open assert backoff", pickUid, pickId, "in", sec, "s", "fail", st.fails)
+				end
+				local g = tonumber(cfg().miscGiftBagAssertionFailureCooldownSec) or 300
+				Ticks.miscGiftBagGlobalQuietUntil = now + g
+			elseif giftBagErrIsTooFast(lastE) then
+				local rl = ARQ.giftBagRateLimit[pickUid] or {}
+				local mul = tonumber(cfg().giftBagTooFastBackoffMultiplier) or 1.5
+				local cap = tonumber(cfg().giftBagTooFastMaxDelaySec) or 8
+				local baseD = tonumber(cfg().giftBagTooFastBaseDelaySec) or 1.5
+				rl.delay = math.min(cap, math.max(baseD, (rl.delay or baseD) * mul))
+				rl.untilT = now + rl.delay
+				ARQ.giftBagRateLimit[pickUid] = rl
+				traceThrottled("gift_bag_too_fast", 14, "log", "GiftBag_Open rate backoff", pickUid, pickId, "delay", rl.delay)
+			end
 			return
 		end
 	end
@@ -4767,6 +4877,20 @@ function ARQ.tryQuestEquipEnchantFromInventory(eggMode)
 		return
 	end
 	local tierById = ARQ.inventoryMaxTierByEnchantId(s)
+	local rowsTierUp = ARQ.getEquippedEnchantRows(s)
+	for _, row in ipairs(rowsTierUp) do
+		local invMax = tierById[row.id]
+		if type(invMax) == "number" and invMax > row.tier then
+			pcall(function()
+				EnchantCmds.Unequip(tonumber(row.slot) or row.slot)
+			end)
+			log("Enchants_Unequip", row.slot, row.id, "tier_upgrade", row.tier, invMax)
+		end
+	end
+	s = Save and Save.Get and Save.Get()
+	if not s then
+		return
+	end
 	local plan = ARQ.buildTargetEnchantPlan(maxSlots, priority, tierById)
 	if #plan == 0 then
 		Ticks.lastEnchantLoadoutTick = now
@@ -4964,6 +5088,17 @@ function AR.Cons.getPotionItemClass()
 	return PotionItem
 end
 
+function AR.Cons.getFruitItemClass()
+	local FruitItem = nil
+	pcall(function()
+		local ms = ReplicatedStorage.Library.Items:FindFirstChild("FruitItem")
+		if ms then
+			FruitItem = cacheReq(ms)
+		end
+	end)
+	return FruitItem
+end
+
 function AR.Cons.canUsePotionTier(tier)
 	local tierOk = true
 	if MasteryCmds and MasteryCmds.CanUsePotion then
@@ -5121,7 +5256,13 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 	if not s or not s.Inventory or not s.Inventory.Fruit then
 		return
 	end
-
+	local cont = nil
+	pcall(function()
+		cont = InventoryCmds.Container()
+	end)
+	local FruitItem = AR.Cons.getFruitItemClass()
+	local cap = tonumber(cfg().questConsumeFruitMaxAtOnce) or 4
+	local candidates = {}
 	for uid, data in pairs(s.Inventory.Fruit) do
 		if type(uid) == "string" then
 			local maxC = 0
@@ -5129,17 +5270,64 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 				maxC = FruitCmds.GetMaxConsume(uid) or 0
 			end)
 			if maxC >= 1 then
-				local cap = tonumber(cfg().questConsumeFruitMaxAtOnce) or 4
-				local take = math.min(maxC, math.max(1, cap))
-				Ticks.lastFruitConsumeTick = now
-				pcall(function()
-					FruitCmds.Consume(uid, take)
-				end)
-				log("Fruits: Consume", uid, data and data.id, take)
-				break
+				local tier = tonumber(data and data.tn) or 1
+				local shiny = false
+				if cont and FruitItem then
+					local item = cont:Get(uid, FruitItem)
+					if item then
+						if item.GetTier then
+							pcall(function()
+								local t = item:GetTier()
+								if type(t) == "number" then
+									tier = t
+								end
+							end)
+						end
+						if item.IsShiny then
+							pcall(function()
+								shiny = item:IsShiny() == true
+							end)
+						end
+					end
+				end
+				table.insert(candidates, {
+					uid = uid,
+					id = data and data.id,
+					maxC = maxC,
+					tier = tier,
+					shiny = shiny,
+				})
 			end
 		end
 	end
+	if #candidates == 0 then
+		return
+	end
+	if cfg().questConsumeFruitsPreferMaxTier ~= false then
+		table.sort(candidates, function(a, b)
+			if a.tier ~= b.tier then
+				return a.tier > b.tier
+			end
+			if a.shiny ~= b.shiny then
+				return a.shiny
+			end
+			if a.maxC ~= b.maxC then
+				return a.maxC > b.maxC
+			end
+			return tostring(a.uid) < tostring(b.uid)
+		end)
+	else
+		table.sort(candidates, function(a, b)
+			return tostring(a.uid) < tostring(b.uid)
+		end)
+	end
+	local pick = candidates[1]
+	local take = math.min(pick.maxC, math.max(1, cap))
+	Ticks.lastFruitConsumeTick = now
+	pcall(function()
+		FruitCmds.Consume(pick.uid, take)
+	end)
+	log("Fruits: Consume", pick.uid, pick.id, take)
 end
 
 function AR.Cons.tryAutoConsumeConsumablesLegacy()
@@ -5712,8 +5900,17 @@ AR.ARC = (function()
 		return nil, nil
 	end
 
+	local function hatchBatchUpperBound()
+		local cap = math.clamp(math.floor(tonumber(cfg().hatchMaxBatchAllowed) or 10), 1, 12)
+		if cfg().safeMode ~= false then
+			cap = math.min(cap, 3)
+		end
+		return cap
+	end
+
 	local function eggMaxAffordableHatchCount(eggDir, maxWanted)
-		maxWanted = math.clamp(maxWanted or 12, 1, 12)
+		local capB = hatchBatchUpperBound()
+		maxWanted = math.clamp(maxWanted or capB, 1, capB)
 		if cfg().hatchClampToAffordableAmount == false then
 			return maxWanted
 		end
@@ -5875,18 +6072,35 @@ AR.ARC = (function()
 		if explicit and explicit > 0 then
 			return explicit, true
 		end
-		if cfg().preferZoneEggWhenProgress and MapCmds then
-			local zoneId = safeCurrentZone()
-			-- При progress hatch (tracked=nil) ориентироваться на max owned — иначе лаг MapCmds оставляет в старой зоне и крутим чужое яйцо.
+		-- Без активной цели GoalCmds (progress-only): не брать яйцо по спавну/старой зоне — только глобальный pickEggNumber.
+		if cfg().preferZoneEggWhenProgress and MapCmds and tracked ~= nil then
+			local ordered = {}
+			local seen = {}
+			local function pushZone(z)
+				if type(z) ~= "string" or z == "" then
+					return
+				end
+				if seen[z] then
+					return
+				end
+				seen[z] = true
+				table.insert(ordered, z)
+			end
+			local ch = LocalPlayer.Character
+			local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				pushZone(AR.QuestWorldHelpers.getZoneIdAtWorldPosition(hrp.Position))
+			end
+			pushZone(safeCurrentZone())
 			if tracked == nil and ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
 				local okz, mz = pcall(function()
 					return select(1, ZoneCmds.GetMaxOwnedZone())
 				end)
-				if okz and type(mz) == "string" and mz ~= "" then
-					zoneId = mz
+				if okz then
+					pushZone(mz)
 				end
 			end
-			if zoneId then
+			for _, zoneId in ipairs(ordered) do
 				local zn = HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
 				if zn > 0 then
 					return zn, false
@@ -5899,6 +6113,12 @@ AR.ARC = (function()
 	function HatchAssist.pivotForEgg(eggDir, tracked)
 		if not eggDir or not cfg().pivotBeforeRemotePurchases or not cfg().hatchTeleportNearEgg then
 			return
+		end
+		if eggDir.eggNumber then
+			local untilT = Ticks.eggPhysicalPartMissUntil[eggDir.eggNumber]
+			if type(untilT) == "number" and untilT > tick() then
+				return
+			end
 		end
 		if eggDir._id == "Infinity Egg" then
 			if HatchAssist.infinityAllowed(tracked) then
@@ -5937,9 +6157,17 @@ AR.ARC = (function()
 					ch:PivotTo(part.CFrame * CFrame.new(0, yOff, 0))
 				end)
 				stabilizeCharacterPhysics(ch)
+				Ticks.eggPhysicalPartMissUntil[eggDir.eggNumber] = nil
 				log("Pivot to physical egg", eggDir.eggNumber)
 			else
-				log("Failed to find physical egg part for", eggDir.eggNumber)
+				local cd = tonumber(cfg().eggPhysicalPartMissingCooldown) or 10
+				Ticks.eggPhysicalPartMissUntil[eggDir.eggNumber] = tick() + math.max(2, cd)
+				logThrottled(
+					"egg_part_missing_" .. tostring(eggDir.eggNumber),
+					math.max(3, cd * 0.5),
+					"Failed to find physical egg part for",
+					eggDir.eggNumber
+				)
 			end
 		end
 	end
@@ -6165,7 +6393,7 @@ AR.ARC = (function()
 		hatchSkipDiag("modules_missing")
 		return
 	end
-	if hatchBusy then
+	if hatchSequenceBlocksWorldTeleport() then
 		hatchSkipDiag("hatch_busy")
 		return
 	end
@@ -6209,7 +6437,7 @@ AR.ARC = (function()
 		return
 	end
 
-	if cfg().questEggTeleportIfWrongZone and fromQuestText and MapCmds and Network and TeleportMapCmds then
+	if cfg().questEggTeleportIfWrongZone and (fromQuestText or progressOnly) and MapCmds and Network and TeleportMapCmds then
 		local cur = safeCurrentZone()
 		local eggZ = AR.QuestWorldHelpers.getEggZoneIdForNumber(n)
 		if eggZ and cur and not eggZoneIdsEqual(eggZ, cur) then
@@ -6220,7 +6448,8 @@ AR.ARC = (function()
 			end)
 			if can then
 				Ticks.lastQuestHatchTick = now
-				armHatchBusyEnd(cfg().hatchBusyHoldSeconds or 2.6)
+				armHatchBusyEnd(math.max(cfg().hatchBusyHoldSeconds or 2.6, tonumber(cfg().hatchBusyHoldSecondsHidden) or 14))
+				scheduleHatchBusyEarlyRelease(hatchBusyToken)
 				if progressOnly then
 					Ticks.lastProgressOnlyHatchTick = now
 				end
@@ -6266,7 +6495,8 @@ AR.ARC = (function()
 	local capFromGame = 1
 	pcall(function()
 		local mx = EggCmds.GetMaxHatch(eggDir)
-		capFromGame = math.clamp(mx or 1, 1, 12)
+		local capB = hatchBatchUpperBound()
+		capFromGame = math.clamp(mx or 1, 1, capB)
 	end)
 	local hatchAmt = 0
 	local affordOk, affordErr = pcall(function()
@@ -6298,70 +6528,130 @@ AR.ARC = (function()
 		if type(unit) == "number" and unit > 0 then
 			hatchAmt = math.min(hatchAmt, math.clamp(math.floor(spendable / unit), 0, capFromGame))
 		end
-		if hatchAmt < 1 and (cfg().log or cfg().verboseLog) then
-			log(
-				"progress hatch reserve next zone",
-				eggDir._id,
-				"reserve",
-				reservedForZone,
-				"bal",
-				bal,
-				"next",
+	end
+
+	if hatchAmt < 1 and progressOnly and not fromQuestText and cfg().hatchProgressTryCheaperEggWhenReserveBlocks ~= false then
+		local mz = nil
+		if cfg().hatchProgressFallbackEggMaxOwnedZoneOnly ~= false and ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+			pcall(function()
+				mz = select(1, ZoneCmds.GetMaxOwnedZone())
+			end)
+		end
+		local hi = 0
+		pcall(function()
+			hi = EggCmds.GetHighestEggNumberAvailable() or 0
+		end)
+		for cand = hi, 1, -1 do
+			if cand ~= n then
+				local ed = safeEggByNumber(cand)
+				if ed and ed._id then
+					local allow = true
+					if ed._id == "Infinity Egg" and not HatchAssist.infinityAllowed(tracked) then
+						allow = false
+					elseif ed._id ~= "Infinity Egg" and not eggPassesAffordFilter(ed, true) then
+						allow = false
+					end
+					if allow then
+						local loc = false
+						pcall(function()
+							loc = EggCmds.IsEggLocked(ed._id) == true
+						end)
+						if loc then
+							allow = false
+						end
+					end
+					if allow and mz then
+						local ez = AR.QuestWorldHelpers.getEggZoneIdForNumber(cand)
+						if not ez or not eggZoneIdsEqual(ez, mz) then
+							allow = false
+						end
+					end
+					if allow and cfg().questEggTeleportIfWrongZone and MapCmds and Network and TeleportMapCmds then
+						local cur = safeCurrentZone()
+						local eggZ = AR.QuestWorldHelpers.getEggZoneIdForNumber(cand)
+						if eggZ and cur and not eggZoneIdsEqual(eggZ, cur) then
+							local can, reason = false, nil
+							pcall(function()
+								can, reason = TeleportMapCmds.CanTeleportTo(eggZ)
+							end)
+							if can then
+								Ticks.lastQuestHatchTick = now
+								armHatchBusyEnd(math.max(cfg().hatchBusyHoldSeconds or 2.6, tonumber(cfg().hatchBusyHoldSecondsHidden) or 14))
+								scheduleHatchBusyEarlyRelease(hatchBusyToken)
+								Ticks.lastProgressOnlyHatchTick = now
+								if cfg().questEggTeleportClientPivotOnly ~= false then
+									log("progress hatch cheaper egg pivot → zone", eggZ, "for", ed._id, reason)
+									AR.Teleports.schedulePivotRepeats(eggZ)
+								else
+									AR.Net.invoke("Teleports_RequestTeleport", eggZ)
+									log("progress hatch TP → zone", eggZ, "for", ed._id)
+									AR.Teleports.schedulePivotRepeats(eggZ)
+								end
+								return true
+							end
+							allow = false
+						end
+					end
+					if allow then
+						local cap = 1
+						pcall(function()
+							local capB = hatchBatchUpperBound()
+							cap = math.clamp(EggCmds.GetMaxHatch(ed) or 1, 1, capB)
+						end)
+						local ha = eggMaxAffordableHatchCount(ed, cap)
+						local resZ = 0
+						pcall(function()
+							resZ = select(1, nextZoneCurrencyReserveForEgg(ed, progressOnly, fromQuestText))
+						end)
+						if resZ > 0 then
+							local cid2, unit2 = eggHatchUnitPriceAndCurrency(ed)
+							local bal2 = 0
+							pcall(function()
+								bal2 = CurrencyCmds.Get(cid2) or 0
+							end)
+							local spendable2 = math.max(0, bal2 - resZ)
+							if type(unit2) == "number" and unit2 > 0 then
+								ha = math.min(ha, math.clamp(math.floor(spendable2 / unit2), 0, cap))
+							end
+						end
+						if ha >= 1 then
+							n = cand
+							eggDir = ed
+							capFromGame = cap
+							hatchAmt = ha
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if hatchAmt < 1 then
+		if cfg().log or cfg().verboseLog then
+			traceThrottled(
+				"hatch_no_currency_detail",
+				14,
+				"hatch",
+				"quest hatch skip: no currency for",
+				eggDir and eggDir._id,
+				"cap",
+				capFromGame,
+				"progressOnly",
+				progressOnly,
+				"reserve_next",
 				reservedZone and reservedZone.id
 			)
 		end
-	end
-	if hatchAmt < 1 then
-		if cfg().log or cfg().verboseLog then
-			log("quest hatch skip: no currency for", eggDir._id, "cap", capFromGame, "progressOnly", progressOnly)
-		end
-		hatchSkipDiag("no_currency", eggDir._id)
+		hatchSkipDiag("no_currency", eggDir and eggDir._id)
 		return
 	end
 	Ticks.lastQuestHatchTick = now
 
 	local pivotDelay = cfg().hatchAfterPivotDelay or 0.38
 	local busyHold = cfg().hatchBusyHoldSeconds or 2.6
-
-	local function runPurchaseInvoke(customUid)
-		if customUid then
-			AR.Net.invoke("CustomEggs_Hatch", customUid, hatchAmt)
-		elseif EggCmds and type(EggCmds.RequestPurchase) == "function" then
-			EggCmds.RequestPurchase(eggDir._id, hatchAmt)
-		else
-			AR.Net.invoke("Eggs_RequestPurchase", eggDir._id, hatchAmt)
-		end
-	end
-
-	if cfg().hideEggHatching then
-		local customUid = nil
-		if CustomEggsCmds and eggDir._id then
-			pcall(function()
-				customUid = CustomEggsCmds.GetClosestById(eggDir._id)
-			end)
-		end
-		armHatchBusyEnd(busyHold)
-		task.spawn(function()
-			pcall(function()
-				HatchAssist.pivotForEgg(eggDir, tracked)
-				task.wait(pivotDelay)
-				runPurchaseInvoke(customUid)
-				local nBurst = tonumber(cfg().eggOpeningPostInvokeBurstCount)
-				local dBurst = tonumber(cfg().eggOpeningPostInvokeBurstDelay)
-				if type(nBurst) == "number" and nBurst > 0 and type(dBurst) == "number" and dBurst >= 0 then
-					for _ = 1, nBurst do
-						task.wait(dBurst)
-						ARUI.tryClickEggOpeningPrompt({ ignoreThrottles = true })
-					end
-				end
-			end)
-		end)
-		if progressOnly then
-			Ticks.lastProgressOnlyHatchTick = now
-		end
-		log("quest hatch (hidden)", eggDir._id, hatchAmt, gen)
-		return true
-	end
+	local guardSec = math.max(tonumber(cfg().hatchAsyncTeleportBlockSeconds) or 18, pivotDelay + 1)
+	local holdPipeline = math.max(busyHold, tonumber(cfg().hatchBusyHoldSecondsHidden) or guardSec, guardSec)
 
 	local autoOpt = HatchingTypes.Options and HatchingTypes.Options.AUTO
 	if autoOpt then
@@ -6375,8 +6665,10 @@ AR.ARC = (function()
 			customUid = CustomEggsCmds.GetClosestById(eggDir._id)
 		end)
 	end
-	armHatchBusyEnd(busyHold)
+	armHatchBusyEnd(holdPipeline)
+	scheduleHatchBusyEarlyRelease(hatchBusyToken)
 	task.spawn(function()
+		Ticks.hatchAsyncGuardUntil = tick() + guardSec
 		pcall(function()
 			HatchAssist.pivotForEgg(eggDir, tracked)
 			task.wait(pivotDelay)
@@ -6386,12 +6678,27 @@ AR.ARC = (function()
 				HatchingCmds.SetupEgg(eggDir, hatchAmt)
 			end
 			HatchingCmds.AttemptHatch()
+			if cfg().hideEggHatching then
+				local nBurst = tonumber(cfg().eggOpeningPostInvokeBurstCount)
+				local dBurst = tonumber(cfg().eggOpeningPostInvokeBurstDelay)
+				if type(nBurst) == "number" and nBurst > 0 and type(dBurst) == "number" and dBurst >= 0 then
+					for _ = 1, nBurst do
+						task.wait(dBurst)
+						ARUI.tryClickEggOpeningPrompt({ ignoreThrottles = true })
+					end
+				end
+			end
 		end)
+		Ticks.hatchAsyncGuardUntil = tick() + (tonumber(cfg().hatchAsyncPostPipelineGrace) or 3)
 	end)
 	if progressOnly then
 		Ticks.lastProgressOnlyHatchTick = now
 	end
-	log("quest hatch", eggDir._id, hatchAmt, gen)
+	if cfg().hideEggHatching then
+		log("quest hatch (hidden)", eggDir._id, hatchAmt, gen)
+	else
+		log("quest hatch", eggDir._id, hatchAmt, gen)
+	end
 	return true
 end
 
@@ -6405,7 +6712,7 @@ end
 end)()
 
 function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatching)
-	if isHatching or hatchBusy then
+	if isHatching or hatchSequenceBlocksWorldTeleport() then
 		return
 	end
 
@@ -6447,8 +6754,23 @@ function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatch
 	if not maxZoneId or type(maxZoneId) ~= "string" then
 		return
 	end
-	local curZone = safeCurrentZone()
-	if AR.zonesIdMatch(curZone, maxZoneId) then
+	cur = safeCurrentZone()
+	local bypassRandomEventForBehindMax = cfg().blockZoneProgressAllowTeleportWhenBehindMax ~= false and behindMax
+	if ARQ.hasActiveRandomEventBlockingZoneProgress()
+		and cur
+		and not AR.zonesIdMatch(cur, maxZoneId)
+		and not bypassRandomEventForBehindMax
+	then
+		traceThrottled(
+			"teleport_block_random_event",
+			8,
+			"teleport",
+			"skip max zone: active RandomEvent in",
+			tostring(cur)
+		)
+		return
+	end
+	if AR.zonesIdMatch(cur, maxZoneId) then
 		if cfg().teleportClientPivotWhenSameZone and not AR.playerNearZoneTeleportPoint(maxZoneId) then
 			Ticks.lastTeleportTick = now
 			log("teleport same zone client pivot", maxZoneId)
@@ -6472,7 +6794,7 @@ function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatch
 	end
 	Ticks.lastTeleportTick = now
 	if cfg().teleportMaxZoneClientPivotOnly ~= false then
-		log("teleport client pivot max zone", maxZoneId, "from", curZone)
+		log("teleport client pivot max zone", maxZoneId, "from", cur)
 		AR.Teleports.schedulePivotRepeats(maxZoneId)
 		return
 	end
@@ -6482,7 +6804,7 @@ function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatch
 		log("Teleports_RequestTeleport failed", maxZoneId)
 		return
 	end
-	log("Teleport pivot (server+client)", maxZoneId, "from", curZone)
+	log("Teleport pivot (server+client)", maxZoneId, "from", cur)
 	AR.Teleports.schedulePivotRepeats(maxZoneId)
 end
 
@@ -6516,7 +6838,7 @@ function AutoRankRuntimeState.getBreakableFarmCenterPosition(zoneId)
 end
 
 function AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
-	if isHatching or hatchBusy or not cfg().teleportToBreakableFarmCenter then
+	if isHatching or hatchSequenceBlocksWorldTeleport() or not cfg().teleportToBreakableFarmCenter then
 		return
 	end
 	if cfg().advancedRemoteFarm and cfg().remoteFarmSkipBreakablePull then
@@ -6710,7 +7032,7 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 			ARQ.tryTravelToTechStuckRetry(tracked)
 		end)
 		local hhOk, hhErr = pcall(function()
-			isHatching = AR.ARC.tryQuestEggHatchAssist(tracked) == true or hatchBusy == true
+			isHatching = AR.ARC.tryQuestEggHatchAssist(tracked) == true or hatchAsyncPipelineActive()
 		end)
 		if not hhOk then
 			warnErr("tryQuestEggHatchAssist", hhErr)
@@ -6723,24 +7045,30 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		warnErr("tryQuestPlaceFlexibleFlag", pfErr)
 	end
 	local dqEnd = AutoRankRuntimeState.diagQuest
-	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchBusy then
+	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchAsyncPipelineActive() then
 		local eggRelated = tracked and QuestAssist.objectiveMentionsEggOrHatch(tracked)
 		local allowNonEggProgress = tracked
 			and cfg().autoHatchProgressWhenNonEggQuest ~= false
 			and not eggRelated
-		local goalModsMissing = dqEnd and dqEnd.where == "no_goal" and dqEnd.detail == "modules_missing"
+		local dgPick = AutoRankRuntimeState.diagGoalPick
+		local goalGeneratorsDead = type(dgPick) == "table"
+			and (dgPick.generatorCount or 0) > 0
+			and (dgPick.validCallbacks or 0) == 0
+		local progressHatchBlocked = dqEnd
+			and dqEnd.where == "no_goal"
+			and (
+				dqEnd.detail == "modules_missing"
+				or goalGeneratorsDead
+			)
+		local suppressBlindEgg = cfg().autoHatchProgressWhenGoalModulesMissing == false and progressHatchBlocked
 		local wantProgress = false
 		if not tracked then
-			if goalModsMissing and cfg().autoHatchProgressWhenGoalModulesMissing == false then
-				wantProgress = false
-			else
-				wantProgress = true
-			end
+			wantProgress = not suppressBlindEgg
 		else
 			wantProgress = (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
 				or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
 				or allowNonEggProgress
-			if wantProgress and goalModsMissing and cfg().autoHatchProgressWhenGoalModulesMissing == false then
+			if wantProgress and suppressBlindEgg then
 				wantProgress = false
 			end
 		end
@@ -6766,8 +7094,16 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 			ARQ.tryTravelToTechStuckRetry(ph)
 		end
 	end)
-	isHatching = isHatching or hatchBusy == true
+	isHatching = isHatching or hatchAsyncPipelineActive()
 	return tracked, isHatching
+end
+
+scheduleQuestAssistPulseAfterHatchBusy = function()
+	task.defer(function()
+		pcall(function()
+			AutoRankRuntimeState.runQuestAssistPulse()
+		end)
+	end)
 end
 
 function AutoRankRuntimeState.tryAutoEquipBestPets()
@@ -6913,12 +7249,33 @@ function AutoRankRuntimeState.farmResolveScanOrigin(diag)
 	if cfg().advancedRemoteFarm and not inInstance and cfg().remoteFarmUseMaxZoneAnchor and ZoneCmds then
 		local maxId = select(1, ZoneCmds.GetMaxOwnedZone())
 		if maxId and type(maxId) == "string" then
+			local farmZoneId = maxId
 			local anchor = AutoRankRuntimeState.getBreakableFarmCenterPosition(maxId)
+			if zoneId and type(zoneId) == "string" and not AR.zonesIdMatch(zoneId, maxId) and cfg().remoteFarmAnchorCurrentZoneWhenCantTeleportMax ~= false and TeleportMapCmds then
+				local can = false
+				pcall(function()
+					can = TeleportMapCmds.CanTeleportTo(maxId) == true
+				end)
+				if not can then
+					local a2 = AutoRankRuntimeState.getBreakableFarmCenterPosition(zoneId)
+					if a2 then
+						anchor = a2
+						farmZoneId = zoneId
+					end
+				end
+			end
+			if zoneId and type(zoneId) == "string" and not AR.zonesIdMatch(zoneId, maxId) and hatchAsyncPipelineActive() then
+				local a3 = AutoRankRuntimeState.getBreakableFarmCenterPosition(zoneId)
+				if a3 then
+					anchor = a3
+					farmZoneId = zoneId
+				end
+			end
 			if anchor then
 				pos = anchor
-				zoneId = maxId
+				zoneId = farmZoneId
 				diag.zoneId = zoneId
-				diag.posSource = "max_zone_anchor"
+				diag.posSource = (farmZoneId == maxId) and "max_zone_anchor" or "current_zone_anchor_fallback"
 				mult = tonumber(cfg().remoteFarmRadiusMultiplier) or 1
 				if mult < 1 then
 					mult = 1
@@ -6962,6 +7319,47 @@ function AutoRankRuntimeState.farmMergeBreakableChunks(zoneId, inInstance, class
 	return byUid
 end
 
+function AutoRankRuntimeState.farmMergeRandomEventBreakableUids(zoneId, inInstance, pos, r, byUid, diag)
+	if cfg().farmMergeRandomEventBreakableParts == false then
+		return 0
+	end
+	if inInstance or not BreakableFrontend or type(BreakableFrontend.Get) ~= "function" then
+		return 0
+	end
+	if not pos or not r or type(zoneId) ~= "string" or zoneId == "" then
+		return 0
+	end
+	local things = workspace:FindFirstChild("__THINGS")
+	local folder = things and things:FindFirstChild("RandomEvents")
+	if not folder then
+		return 0
+	end
+	local added = 0
+	local allowShielded = cfg().farmExplosiveBreakableAssist == true
+	for _, inst in ipairs(folder:GetDescendants()) do
+		if inst:IsA("BasePart") then
+			local uid = inst:GetAttribute("BreakableUID")
+			if type(uid) == "string" and uid ~= "" and not byUid[uid] then
+				local entry = nil
+				pcall(function()
+					entry = BreakableFrontend.Get(uid)
+				end)
+				if entry and entry.model and entry.dir and not entry.dir.NoTapping and (not entry.disableDamage or allowShielded) then
+					local pp = entry.model.PrimaryPart
+					if pp and (pp.Position - pos).Magnitude <= r then
+						byUid[uid] = entry
+						added += 1
+					end
+				end
+			end
+		end
+	end
+	if added > 0 then
+		diag.randomEventBreakablesMerged = added
+	end
+	return added
+end
+
 function AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 	local out = {}
 	for uid, entry in pairs(byUid) do
@@ -6976,11 +7374,24 @@ function AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 			end
 		end
 	end
-	if cfg().preferClosest then
-		table.sort(out, function(a, b)
-			return a.d < b.d
-		end)
+	local reFolder = nil
+	if cfg().farmPrioritizeRandomEventBreakables ~= false then
+		local things = workspace:FindFirstChild("__THINGS")
+		reFolder = things and things:FindFirstChild("RandomEvents")
 	end
+	table.sort(out, function(a, b)
+		if reFolder then
+			local ma = a.entry.model and a.entry.model:IsDescendantOf(reFolder)
+			local mb = b.entry.model and b.entry.model:IsDescendantOf(reFolder)
+			if ma ~= mb then
+				return ma
+			end
+		end
+		if cfg().preferClosest then
+			return a.d < b.d
+		end
+		return false
+	end)
 	diag.inRadius = #out
 	return out
 end
@@ -7031,6 +7442,10 @@ function AutoRankRuntimeState.collectFarmCandidates()
 	local byUid = AutoRankRuntimeState.farmMergeBreakableChunks(zoneId, diag.inInstance, classes, diag)
 	local r = (cfg().farmRadius or 420) * mult
 	diag.radius = r
+	local nRe = AutoRankRuntimeState.farmMergeRandomEventBreakableUids(zoneId, diag.inInstance, pos, r, byUid, diag)
+	if nRe > 0 then
+		diag.rawTotal += nRe
+	end
 	local out = AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 	AutoRankRuntimeState.farmFinalizeEmptyListDiag(diag, r, out)
 	AutoRankRuntimeState.farmCandidateCacheStore(out, diag)
@@ -7077,7 +7492,7 @@ function AutoRankRuntimeState.dealDamageSignal(uid)
 end
 
 function AutoRankRuntimeState.farmTick()
-	if hatchBusy then
+	if hatchAsyncPipelineActive() then
 		return
 	end
 	if not cfg().farmNormalBreakables then
@@ -7136,7 +7551,7 @@ function AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedObjective, isHa
 	if cfg().forceTeleportWhenBehindMaxZone and behindMax then
 		skipRemoteTp = false
 	end
-	if isHatching or hatchBusy then
+	if isHatching or hatchSequenceBlocksWorldTeleport() then
 		skip = "hatching_or_hatchBusy"
 	elseif skipRemoteTp then
 		skip = "remoteFarmSkipMaxZoneTeleport"
@@ -7166,11 +7581,16 @@ function AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedObjective, isHa
 					skip = "already_at_max_owned_zone"
 				end
 			else
-				local can, reason = TeleportMapCmds.CanTeleportTo(d.maxOwned)
-				if not can then
-					skip = "CanTeleportTo false: " .. tostring(reason)
+				local bypassRe = cfg().blockZoneProgressAllowTeleportWhenBehindMax ~= false and behindMax
+				if ARQ.hasActiveRandomEventBlockingZoneProgress() and d.cur and not bypassRe then
+					skip = "random_event_blocks_teleport in " .. tostring(d.cur)
 				else
-					skip = "ok_can_teleport (fires on interval tick)"
+					local can, reason = TeleportMapCmds.CanTeleportTo(d.maxOwned)
+					if not can then
+						skip = "CanTeleportTo false: " .. tostring(reason)
+					else
+						skip = "ok_can_teleport (fires on interval tick)"
+					end
 				end
 			end
 		end
@@ -7225,7 +7645,19 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 			trace("pulse.goalHints", table.concat(dg.hints, " | "))
 		end
 	end
-	trace("pulse.flags", "hatchBusy=", hatchBusy, "isHatching=", isHatching)
+	local guardLeft = 0
+	if type(Ticks.hatchAsyncGuardUntil) == "number" then
+		guardLeft = math.max(0, Ticks.hatchAsyncGuardUntil - tick())
+	end
+	trace(
+		"pulse.flags",
+		"hatchBusy=",
+		hatchBusy,
+		"hatchGuardLeft=",
+		string.format("%.2f", guardLeft),
+		"isHatching=",
+		isHatching
+	)
 	local rb = false
 	pcall(function()
 		rb = Variables and Variables.IsRebirthing == true
@@ -7733,13 +8165,13 @@ function AR.Cons.conditionMet(cond)
 		if dq and type(dq.snippet) == "string" and string.find(string.lower(dq.snippet), "hatch", 1, true) then
 			return true
 		end
-		return hatchBusy == true
+		return hatchBusy == true or hatchAsyncPipelineActive()
 	end
 	if cond == "eggHatch" then
 		if Variables and Variables.OpeningEgg == true then
 			return true
 		end
-		return hatchBusy == true
+		return hatchBusy == true or hatchAsyncPipelineActive()
 	end
 	return false
 end
@@ -7748,6 +8180,14 @@ function AR.Cons.tryConsumeFlag(name, flagId, reserve)
 	if not (FlexibleFlagCmds and type(FlexibleFlagCmds.Consume) == "function") then
 		AR.Cons.debug("flag", name, "skip: FlexibleFlagCmds missing")
 		return false
+	end
+	if cfg().consumeSkipMagnetFlagWhenOrbMagnet ~= false then
+		if name == "Magnet" or (type(flagId) == "string" and string.find(flagId, "Magnet", 1, true)) then
+			if cfg().collectOrbs and cfg().orbMagnetBoost then
+				AR.Cons.debug("flag", name, "skip: collectOrbs+orbMagnetBoost")
+				return false
+			end
+		end
 	end
 	local ids = AR.Cons.idCandidates(flagId)
 	for _, cid in ipairs(ids) do
@@ -7813,6 +8253,23 @@ function AR.Cons.tryConsumeSprinkler(name, sprinklerId, reserve)
 		AR.Cons.debug("sprinkler", name, "skip: no current zone")
 		return false
 	end
+	do
+		local sparseBelow = tonumber(cfg().consumeSprinklerOnlyWhenInRadiusBelow) or 0
+		if sparseBelow > 0 then
+			local df = AutoRankRuntimeState.diagFarm or {}
+			local ir = tonumber(df.inRadius)
+			local rt = tonumber(df.rawTapOk)
+			local minTap = tonumber(cfg().consumeSprinklerSparseMinRawTapOk) or 10
+			if type(ir) ~= "number" or ir > sparseBelow then
+				AR.Cons.debug("sprinkler", name, "skip: sparse gate inRadius", tostring(ir), sparseBelow)
+				return false
+			end
+			if type(rt) ~= "number" or rt < minTap then
+				AR.Cons.debug("sprinkler", name, "skip: sparse gate rawTapOk", tostring(rt), minTap)
+				return false
+			end
+		end
+	end
 	local ids = AR.Cons.idCandidates(sprinklerId)
 	for _, sid in ipairs(ids) do
 		local failKey = "sprinkler:" .. tostring(sid) .. ":" .. tostring(zid)
@@ -7852,7 +8309,8 @@ function AR.Cons.tryConsumeSprinkler(name, sprinklerId, reserve)
 			AR.Cons.debug("sprinkler", name, "skip: no local stack", sid)
 			continue
 		end
-		local take = math.min(best.amount, math.max(1, maxPlace), math.max(1, stack - (tonumber(reserve) or 0)))
+		local cap = math.max(1, math.floor(tonumber(cfg().consumeSprinklerMaxPerInvoke) or 1))
+		local take = math.min(best.amount, math.max(1, maxPlace), math.max(1, stack - (tonumber(reserve) or 0)), cap)
 		local res, err = pcall(function()
 			return AR.Cons.SprinklerCmds.Consume(sid, best.uid, take)
 		end)
@@ -7933,6 +8391,25 @@ function AR.Cons.ensureSprinklerCmds()
 	return AR.Cons.SprinklerCmds
 end
 
+local AR_CONS_TICK_PRIO = {
+	{ fn="flag",      name="Hasty",       prio=10, cond="inDottedBox",
+		toggleCfgKey="consumeFlagsHasty",      reserveCfgKey="consumeReserveHasty",      idCfgKey="consumeFlagIdHasty" },
+	{ fn="flag",      name="Strength",    prio=10, cond="inDottedBox",
+		toggleCfgKey="consumeFlagsStrength",   reserveCfgKey="consumeReserveStrength",   idCfgKey="consumeFlagIdStrength" },
+	{ fn="flag",      name="Magnet",      prio=8,  cond="inDottedBox",
+		toggleCfgKey="consumeFlagsMagnet",     reserveCfgKey="consumeReserveMagnet",     idCfgKey="consumeFlagIdMagnet" },
+	{ fn="sprinkler", name="Sprinkler",   prio=7,  cond="inDottedBox",
+		toggleCfgKey="consumeSprinklers",      reserveCfgKey="consumeReserveSprinkler",  idCfgKey="consumeSprinklerId" },
+	{ fn="potion",    name="DamagePotion",prio=6,  cond="alwaysOn",
+		toggleCfgKey="consumeDamagePotion",    reserveCfgKey="consumeReserveDamagePotion", idCfgKey="consumePotionIdDamage" },
+	{ fn="potion",    name="Rainbow",     prio=4,  cond="hatchSession",
+		toggleCfgKey="consumeRainbow",         reserveCfgKey="consumeReserveRainbow",    idCfgKey="consumePotionIdRainbow" },
+	{ fn="potion",    name="Shiny",       prio=4,  cond="hatchSession",
+		toggleCfgKey="consumeShiny",           reserveCfgKey="consumeReserveShiny",      idCfgKey="consumePotionIdShiny" },
+	{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
+		toggleCfgKey="consumeHugeHunter",      reserveCfgKey="consumeReserveHugeHunter", idCfgKey="consumePotionIdHugeHunter" },
+}
+
 function AR.Cons.tick()
 	if cfg().autoConsumeEnabled ~= true then
 		return
@@ -7955,25 +8432,7 @@ function AR.Cons.tick()
 		end
 	end
 	AR.Cons.ensureSprinklerCmds()
-	local PRIO = {
-		{ fn="flag",      name="Hasty",       prio=10, cond="inDottedBox",
-			toggleCfgKey="consumeFlagsHasty",      reserveCfgKey="consumeReserveHasty",      idCfgKey="consumeFlagIdHasty" },
-		{ fn="flag",      name="Strength",    prio=10, cond="inDottedBox",
-			toggleCfgKey="consumeFlagsStrength",   reserveCfgKey="consumeReserveStrength",   idCfgKey="consumeFlagIdStrength" },
-		{ fn="flag",      name="Magnet",      prio=8,  cond="inDottedBox",
-			toggleCfgKey="consumeFlagsMagnet",     reserveCfgKey="consumeReserveMagnet",     idCfgKey="consumeFlagIdMagnet" },
-		{ fn="sprinkler", name="Sprinkler",   prio=7,  cond="inDottedBox",
-			toggleCfgKey="consumeSprinklers",      reserveCfgKey="consumeReserveSprinkler",  idCfgKey="consumeSprinklerId" },
-		{ fn="potion",    name="DamagePotion",prio=6,  cond="alwaysOn",
-			toggleCfgKey="consumeDamagePotion",    reserveCfgKey="consumeReserveDamagePotion", idCfgKey="consumePotionIdDamage" },
-		{ fn="potion",    name="Rainbow",     prio=4,  cond="hatchSession",
-			toggleCfgKey="consumeRainbow",         reserveCfgKey="consumeReserveRainbow",    idCfgKey="consumePotionIdRainbow" },
-		{ fn="potion",    name="Shiny",       prio=4,  cond="hatchSession",
-			toggleCfgKey="consumeShiny",           reserveCfgKey="consumeReserveShiny",      idCfgKey="consumePotionIdShiny" },
-		{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
-			toggleCfgKey="consumeHugeHunter",      reserveCfgKey="consumeReserveHugeHunter", idCfgKey="consumePotionIdHugeHunter" },
-	}
-	for _, e in ipairs(PRIO) do
+	for _, e in ipairs(AR_CONS_TICK_PRIO) do
 		local cfg_t = cfg()
 		if cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
 			local id = cfg_t[e.idCfgKey]
@@ -8028,52 +8487,28 @@ function AR.HB.dispatch()
 	end
 end
 
-function AutoRankRuntimeState.autoRankHeartbeatWorkLegacy()
-	pcall(ensureModulesOnHeartbeat)
-	ARUI.tryDismissRebirthUi()
-	ARUI.tryDismissRankUpUi()
-	ARUI.tryDismissMasteryPerkUi()
-	AutoRankRuntimeState.tryAutoClickMessageDialogYes()
-	tryInstallNetworkInvokeDebugHook()
-	tryInstallKickGuard()
-	patchOrbMagnet()
-	hookOrbNetwork()
-	AutoRankRuntimeState.tutorialTick()
-	AR.Pets.tryPickStarterPets()
-	AutoRankRuntimeState.tryClaimRankRewards()
-	AutoRankRuntimeState.tryRankUpViaGui()
-	ARZone.tryAutoBuyInstanceZone()
-	ARZone.tryAutoBuyMainZone()
-	tryAutoBuyEggSlots()
-	tryAutoBuyEquipSlots()
-	tryAutoBuyCheapestUpgrade()
-	AutoRankRuntimeState.tryMinigameAssistPulse()
-	local trackedQuest, isHatching = nil, false
-	local qaOk, qaErr = pcall(function()
-		trackedQuest, isHatching = AutoRankRuntimeState.runQuestAssistPulse()
-	end)
-	if not qaOk then
-		warnErr("runQuestAssistPulse", qaErr)
+-- Тот же порядок/набор, что AR.HB.tasks; без интервалов (каждый Heartbeat). При hbSchedulerEnabled=false.
+function AR.HB.runLegacyFrame()
+	local cfg_t = cfg()
+	local tasks = AR.HB.tasks
+	if not tasks then
+		return
 	end
-	AR.Cons.tryAutoBuffConsumablesPulseLegacy()
-	tryAutoDaycare()
-	pcall(function()
-		ARQ.tryQuestEquipEnchantFromInventory(isHatching == true or hatchBusy == true)
-	end)
-	ARUI.tryClickEggOpeningPrompt()
-	AutoRankRuntimeState.tryAutoEquipBestPets()
-	ARUI.tryClickReturnToMaxAreaButton()
-	AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedQuest, isHatching)
-	AutoRankRuntimeState.tryPivotToBreakableFarmCenter(isHatching)
-	AutoRankRuntimeState.tryAutoEnableAutoFarm()
-	AutoRankRuntimeState.farmTick()
-	tryCollectOrbs()
-	AR.UI.tryDisableBuiltInAutoTapper()
-	AR.Pets.tick()
-	AR.Reward.tick()
-	AR.Lootbox.tick()
-	AR.Cons.tick()
-	return trackedQuest, isHatching
+	for i = 1, #tasks do
+		local t = tasks[i]
+		if t.gate and not t.gate() then
+		else
+			local ok, err = pcall(t.fn, cfg_t)
+			if not ok then
+				traceThrottled("hb_legacy_err_" .. t.tag, 5, "hb", "legacy task", t.tag, "err", err)
+			end
+		end
+	end
+end
+
+function AutoRankRuntimeState.autoRankHeartbeatWorkLegacy()
+	AR.HB.runLegacyFrame()
+	return AR.HB.state.trackedQuest, AR.HB.state.isHatching
 end
 
 AR.HB.state = { trackedQuest = nil, isHatching = false }
@@ -8094,8 +8529,6 @@ AR.HB.tasks = {
 	{ tag = "starterPets", interval = "autoPickStarterPetsInterval", fn = function() AR.Pets.tryPickStarterPets() end },
 	{ tag = "claimRanks", interval = 0.35, fn = function() AutoRankRuntimeState.tryClaimRankRewards() end },
 	{ tag = "rankUpGui", interval = 0.5, fn = function() AutoRankRuntimeState.tryRankUpViaGui() end },
-	{ tag = "buyInstanceZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyInstanceZone() end },
-	{ tag = "buyMainZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyMainZone() end },
 	{ tag = "buyEggSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEggSlots() end },
 	{ tag = "buyEquipSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEquipSlots() end },
 	{ tag = "buyUpgrade", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyCheapestUpgrade() end },
@@ -8108,11 +8541,13 @@ AR.HB.tasks = {
 			warnErr("runQuestAssistPulse", qaErr)
 		end
 	end },
+	{ tag = "buyInstanceZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyInstanceZone() end },
+	{ tag = "buyMainZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyMainZone() end },
 	{ tag = "consumablesLegacy", interval = "hbIntervalConsumables", fn = function() AR.Cons.tryAutoBuffConsumablesPulseLegacy() end },
 	{ tag = "daycare", interval = 1.0, fn = function() tryAutoDaycare() end },
 	{ tag = "questEnchant", interval = "hbIntervalEquipPets", fn = function()
 		pcall(function()
-			ARQ.tryQuestEquipEnchantFromInventory(AR.HB.state.isHatching == true or hatchBusy == true)
+			ARQ.tryQuestEquipEnchantFromInventory(AR.HB.state.isHatching == true or hatchAsyncPipelineActive())
 		end)
 	end },
 	{ tag = "eggOpeningPrompt", interval = 0.32, fn = function() ARUI.tryClickEggOpeningPrompt() end },
@@ -8132,6 +8567,9 @@ AR.HB.tasks = {
 	{ tag = "freeGifts", interval = "hbIntervalFreeRewards", fn = function() AR.Reward.tick() end },
 	{ tag = "lootbox", interval = "hbIntervalLootbox", fn = function() AR.Lootbox.tick() end },
 	{ tag = "cons", interval = "hbIntervalConsumables", fn = function() AR.Cons.tick() end },
+	{ tag = "miscGiftBags", interval = "autoOpenMiscGiftBagsInterval", fn = function()
+		pcall(ARQ.tryAutoOpenMiscGiftBags)
+	end },
 }
 
 function AutoRankRuntimeState.autoRankHeartbeatWork()
