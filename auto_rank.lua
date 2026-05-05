@@ -1,7 +1,6 @@
 --[[
-  AutoRank bootstrap — loads full runtime from autorank/core.lua.
-  Local: place autorank/core.lua next to this file (readfile).
-  Remote: HttpGet getgenv().AutoRankCoreUrl or GitHub raw fallback below.
+  AutoRank bootstrap — только HttpGet (никакого readfile).
+  URL: getgenv().AutoRankCoreUrl или fallback raw ниже.
 ]]
 
 local CORE_FALLBACK_URL =
@@ -13,29 +12,11 @@ if type(coreUrl) ~= "string" or coreUrl == "" then
 	coreUrl = CORE_FALLBACK_URL
 end
 
-local src = nil
-if readfile and isfile then
-	for _, path in ipairs({ "autorank/core.lua", "./autorank/core.lua" }) do
-		if isfile(path) then
-			local ok, chunk = pcall(readfile, path)
-			if ok and type(chunk) == "string" and #chunk > 0 then
-				src = chunk
-				break
-			end
-		end
-	end
-end
-if not src then
-	local ok, body = pcall(function()
-		return game:HttpGet(coreUrl, true)
-	end)
-	if ok and type(body) == "string" and #body > 0 then
-		src = body
-	end
-end
-
-if not src then
-	error("[AutoRank] Cannot load autorank/core.lua (readfile path or HttpGet).")
+local ok, src = pcall(function()
+	return game:HttpGet(coreUrl, true)
+end)
+if not ok or type(src) ~= "string" or #src == 0 then
+	error("[AutoRank] HttpGet core failed: " .. tostring(coreUrl))
 end
 if not loadstring then
 	error("[AutoRank] loadstring not available.")

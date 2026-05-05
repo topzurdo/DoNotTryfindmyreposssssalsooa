@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 9
+local AUTO_RANK_RUNTIME_VERSION = 10
 
 --[[ NAV: defaults HttpGet | autorank/worlds/* profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -159,17 +159,11 @@ local function cfg()
 	return G.AutoRank
 end
 
--- Same repo root as defaults (world modules use readfile or HttpGet).
+-- World/registry Lua — только HttpGet (база репозитория на GitHub raw).
 local AUTO_RANK_REPO_BASE = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/"
 
 local function loadAutoRankOptionalScript(relativePath)
 	local rel = string.gsub(relativePath, "^%./", "")
-	if readfile and isfile and isfile(rel) then
-		local ok, s = pcall(readfile, rel)
-		if ok and type(s) == "string" and #s > 0 then
-			return s
-		end
-	end
 	local url = AUTO_RANK_REPO_BASE .. rel
 	local ok, body = pcall(function()
 		return game:HttpGet(url, true)
@@ -2114,7 +2108,6 @@ local function tryRegisterCrossPlaceScriptReload()
 		return
 	end
 	local url = cfg().crossPlaceReloadUrl
-	local path = cfg().crossPlaceReloadReadfile
 	local delay = tonumber(cfg().crossPlaceReloadDelaySec) or 3
 	if delay < 0 then
 		delay = 0
@@ -2122,14 +2115,8 @@ local function tryRegisterCrossPlaceScriptReload()
 	local innerExec
 	if type(url) == "string" and string.match(url, "^https?://") then
 		innerExec = "loadstring(game:HttpGet(" .. string.format("%q", url) .. ", true))()"
-	elseif type(path) == "string" and #path > 0 then
-		if not execResolve("readfile") then
-			trace("cross_place", "crossPlaceReloadReadfile задан, но readfile() недоступен")
-			return
-		end
-		innerExec = "loadstring(readfile(" .. string.format("%q", path) .. "))()"
 	else
-		trace("cross_place", "crossPlaceAutoReload: укажи crossPlaceReloadUrl (https raw) или crossPlaceReloadReadfile")
+		trace("cross_place", "crossPlaceAutoReload: укажи crossPlaceReloadUrl (https:// raw, без readfile)")
 		return
 	end
 	local snippet = string.format(
