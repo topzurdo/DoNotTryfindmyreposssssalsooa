@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 10
+local AUTO_RANK_RUNTIME_VERSION = 11
 
 --[[ NAV: defaults HttpGet | autorank/worlds/* profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -4050,7 +4050,7 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 end
 
 -- Клиент ActionMenu: часть предметов — GiftBag_Open(name), часть — GiftBag_Open(name, uid), бандлы часто сначала name-only, затем name+uid.
-local ARQ_GIFTBAG_OPEN_NAME_ONLY = {
+ARQ._giftBagOpenNameOnly = {
 	["Mini Chest"] = true,
 	["Rainbow Mini Chest"] = true,
 	["Global Event Gift"] = true,
@@ -4059,33 +4059,33 @@ local ARQ_GIFTBAG_OPEN_NAME_ONLY = {
 	["Seed Bag"] = true,
 }
 -- Studio: Large Gift Bag / Gift Bag — второй аргумент uid.
-local ARQ_GIFTBAG_OPEN_NAME_AND_UID = {
+ARQ._giftBagOpenNameAndUid = {
 	["Large Gift Bag"] = true,
 	["Gift Bag"] = true,
 }
 
-local function giftBagMiscStackN(data)
+ARQ._giftBagMiscStackN = function(data)
 	if type(data) ~= "table" then
 		return 0
 	end
 	return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
 end
 
-local function giftBagErrIsAssertion(err)
+ARQ._giftBagErrIsAssertion = function(err)
 	return string.find(tostring(err or ""), "assertion", 1, true) ~= nil
 end
 
-local function giftBagErrIsTooFast(err)
+ARQ._giftBagErrIsTooFast = function(err)
 	return string.find(string.lower(tostring(err or "")), "too fast", 1, true) ~= nil
 end
 
 function ARQ.giftBagTryOpenOne(pickId, pickUid, beforeAmt)
 	local attempts = {}
-	if ARQ_GIFTBAG_OPEN_NAME_ONLY[pickId] then
+	if ARQ._giftBagOpenNameOnly[pickId] then
 		attempts[1] = function()
 			return AR.Net.invoke("GiftBag_Open", pickId)
 		end
-	elseif ARQ_GIFTBAG_OPEN_NAME_AND_UID[pickId] then
+	elseif ARQ._giftBagOpenNameAndUid[pickId] then
 		attempts[1] = function()
 			return AR.Net.invoke("GiftBag_Open", pickId, pickUid)
 		end
@@ -4104,7 +4104,7 @@ function ARQ.giftBagTryOpenOne(pickId, pickUid, beforeAmt)
 			lastR, lastE = fn()
 			local s2 = Save and Save.Get and Save.Get()
 			local row = s2 and s2.Inventory and s2.Inventory.Misc and s2.Inventory.Misc[pickUid]
-			local afterAmt = row and giftBagMiscStackN(row) or 0
+			local afterAmt = row and ARQ._giftBagMiscStackN(row) or 0
 			if beforeAmt > afterAmt or (beforeAmt >= 1 and row == nil) then
 				return true, lastR, lastE, i
 			end
@@ -4169,7 +4169,7 @@ function ARQ.tryAutoOpenMiscGiftBags()
 					skipUid = true
 				end
 				if not skipUid then
-					local n = giftBagMiscStackN(data)
+					local n = ARQ._giftBagMiscStackN(data)
 					if n >= 1 then
 						pickUid, pickId, beforeAmt = uid, data.id, n
 						break
@@ -4200,7 +4200,7 @@ function ARQ.tryAutoOpenMiscGiftBags()
 				end
 			end
 		else
-			if giftBagErrIsAssertion(lastE) then
+			if ARQ._giftBagErrIsAssertion(lastE) then
 				local steps = cfg().giftBagAssertionBackoffSeconds
 				if type(steps) ~= "table" or #steps == 0 then
 					steps = { 30, 60, 120, 300 }
@@ -4221,7 +4221,7 @@ function ARQ.tryAutoOpenMiscGiftBags()
 				end
 				local g = tonumber(cfg().miscGiftBagAssertionFailureCooldownSec) or 300
 				Ticks.miscGiftBagGlobalQuietUntil = now + g
-			elseif giftBagErrIsTooFast(lastE) then
+			elseif ARQ._giftBagErrIsTooFast(lastE) then
 				local rl = ARQ.giftBagRateLimit[pickUid] or {}
 				local mul = tonumber(cfg().giftBagTooFastBackoffMultiplier) or 1.5
 				local cap = tonumber(cfg().giftBagTooFastMaxDelaySec) or 8
