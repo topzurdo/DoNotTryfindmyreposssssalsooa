@@ -207,6 +207,87 @@ do
 		G.AutoRank._arHatchProximityGateV6 = 1
 	end
 end
+do
+	local v = G.AutoRank._arConsumeAndEnchantTuneV7 or 0
+	if v < 1 then
+		if G.AutoRank.consumePotionIdDamage == "Damage Potion" then
+			G.AutoRank.consumePotionIdDamage = "Damage"
+		end
+		if G.AutoRank.consumePotionIdRainbow == "Rainbow Potion" then
+			G.AutoRank.consumePotionIdRainbow = "Lucky"
+		end
+		if G.AutoRank.consumePotionIdShiny == "Shiny Potion" then
+			G.AutoRank.consumePotionIdShiny = "Diamonds"
+		end
+		if G.AutoRank.consumePotionIdHugeHunter == "Huge Hunter Potion" then
+			G.AutoRank.consumePotionIdHugeHunter = "Huge"
+		end
+		if G.AutoRank.consumeToyIdBone == nil then
+			G.AutoRank.consumeToyIdBone = "Toy Bone"
+		end
+		if G.AutoRank.consumeToyIdBall == nil then
+			G.AutoRank.consumeToyIdBall = "Toy Ball"
+		end
+		if G.AutoRank.consumeToyIdSqueaky == nil then
+			G.AutoRank.consumeToyIdSqueaky = "Squeaky Toy"
+		end
+		if G.AutoRank.consumeToyRemoteBone == nil then
+			G.AutoRank.consumeToyRemoteBone = "ToyBone_Consume"
+		end
+		if G.AutoRank.consumeToyRemoteBall == nil then
+			G.AutoRank.consumeToyRemoteBall = "ToyBall_Consume"
+		end
+		if G.AutoRank.consumeToyRemoteSqueaky == nil then
+			G.AutoRank.consumeToyRemoteSqueaky = "SqueakyToy_Consume"
+		end
+		if G.AutoRank.consumeToyBone == nil then
+			G.AutoRank.consumeToyBone = true
+		end
+		if G.AutoRank.consumeToyBall == nil then
+			G.AutoRank.consumeToyBall = true
+		end
+		if G.AutoRank.consumeSqueakyToy == nil then
+			G.AutoRank.consumeSqueakyToy = true
+		end
+		if G.AutoRank.consumeReserveToyBone == nil then
+			G.AutoRank.consumeReserveToyBone = 0
+		end
+		if G.AutoRank.consumeReserveToyBall == nil then
+			G.AutoRank.consumeReserveToyBall = 0
+		end
+		if G.AutoRank.consumeReserveSqueakyToy == nil then
+			G.AutoRank.consumeReserveSqueakyToy = 0
+		end
+		if type(G.AutoRank.enchantFarmPriority) == "table" and G.AutoRank.enchantFarmPriority[1] == "Coins" then
+			G.AutoRank.enchantFarmPriority = {
+				"Strong Pets",
+				"Tap Power",
+				"Criticals",
+				"Coins",
+				"Treasure Hunter",
+				"Diamonds",
+				"Magnet",
+				"Walkspeed",
+			}
+		end
+		if type(G.AutoRank.enchantFarmPriorityEarlyZones) ~= "table" then
+			G.AutoRank.enchantFarmPriorityEarlyZones = {
+				"Strong Pets",
+				"Tap Power",
+				"Criticals",
+				"Coins",
+				"Treasure Hunter",
+				"Diamonds",
+				"Magnet",
+				"Walkspeed",
+			}
+		end
+		if G.AutoRank.enchantFarmPriorityEarlyMaxZoneNumber == nil then
+			G.AutoRank.enchantFarmPriorityEarlyMaxZoneNumber = 159
+		end
+		G.AutoRank._arConsumeAndEnchantTuneV7 = 1
+	end
+end
 
 local function cfg()
 	return G.AutoRank
@@ -5123,6 +5204,19 @@ function ARQ.tryQuestEquipEnchantFromInventory(eggMode)
 		return
 	end
 	local priority = eggMode and cfg().enchantHatchPriority or cfg().enchantFarmPriority
+	if not eggMode and type(cfg().enchantFarmPriorityEarlyZones) == "table" and #cfg().enchantFarmPriorityEarlyZones > 0 then
+		local earlyMaxZoneNumber = tonumber(cfg().enchantFarmPriorityEarlyMaxZoneNumber) or 159
+		local _, maxZoneTbl = nil, nil
+		pcall(function()
+			if ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+				_, maxZoneTbl = ZoneCmds.GetMaxOwnedZone()
+			end
+		end)
+		local zoneNumber = tonumber(maxZoneTbl and maxZoneTbl.ZoneNumber) or 0
+		if zoneNumber > 0 and zoneNumber <= earlyMaxZoneNumber then
+			priority = cfg().enchantFarmPriorityEarlyZones
+		end
+	end
 	if type(priority) ~= "table" or #priority == 0 then
 		return
 	end
@@ -6378,8 +6472,23 @@ AR.ARC = (function()
 		if explicit and explicit > 0 then
 			return explicit, true
 		end
+		if tracked == nil and ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+			local mz = nil
+			pcall(function()
+				mz = select(1, ZoneCmds.GetMaxOwnedZone())
+			end)
+			if type(mz) == "string" and mz ~= "" then
+				local zn = HatchAssist.pickHighestEggInPhysicalZone(mz, nil)
+				if zn > 0 then
+					return zn, false
+				end
+				if cfg().hatchProgressFallbackEggMaxOwnedZoneOnly ~= false then
+					return 0, false
+				end
+			end
+		end
 		-- Без активной цели GoalCmds (progress-only): не брать яйцо по спавну/старой зоне — только глобальный pickEggNumber.
-		if cfg().preferZoneEggWhenProgress and MapCmds and tracked ~= nil then
+		if cfg().preferZoneEggWhenProgress and MapCmds then
 			local ordered = {}
 			local seen = {}
 			local function pushZone(z)
@@ -7509,6 +7618,16 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		local allowNonEggProgress = tracked
 			and cfg().autoHatchProgressWhenNonEggQuest ~= false
 			and not eggRelated
+		local shouldPrioritizeZoneProgress = false
+		if ARZone and type(ARZone.getNextMainZonePurchaseInfo) == "function" then
+			local nextInfo = nil
+			pcall(function()
+				nextInfo = ARZone.getNextMainZonePurchaseInfo({ ignoreQuestCompletion = true })
+			end)
+			if type(nextInfo) == "table" then
+				shouldPrioritizeZoneProgress = true
+			end
+		end
 		local dgPick = AutoRankRuntimeState.diagGoalPick
 		local goalGeneratorsDead = type(dgPick) == "table"
 			and (dgPick.generatorCount or 0) > 0
@@ -7522,12 +7641,15 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		local suppressBlindEgg = cfg().autoHatchProgressWhenGoalModulesMissing == false and progressHatchBlocked
 		local wantProgress = false
 		if not tracked then
-			wantProgress = not suppressBlindEgg
+			wantProgress = not suppressBlindEgg and not shouldPrioritizeZoneProgress
 		else
 			wantProgress = (tracked and QuestAssist.shouldSkipObjectiveInteraction(tracked))
 				or (dqEnd and (dqEnd.where == "no_goal" or dqEnd.where == "tab_blocked"))
 				or allowNonEggProgress
 			if wantProgress and suppressBlindEgg then
+				wantProgress = false
+			end
+			if wantProgress and shouldPrioritizeZoneProgress and not eggRelated then
 				wantProgress = false
 			end
 		end
@@ -8848,6 +8970,24 @@ function AR.Cons.tryConsumePotion(name, potionId, reserve)
 	return ok
 end
 
+function AR.Cons.tryConsumeToy(name, toyId, remoteName, reserve)
+	if not (AR and AR.Net and type(AR.Net.invoke) == "function") then
+		return false
+	end
+	if type(toyId) ~= "string" or toyId == "" or type(remoteName) ~= "string" or remoteName == "" then
+		return false
+	end
+	local stack = AR.Cons.inventoryAmountByDirId("Misc", toyId)
+	if stack <= (tonumber(reserve) or 0) then
+		return false
+	end
+	local ok, err = pcall(function()
+		return AR.Net.invoke(remoteName, 1)
+	end)
+	log("Cons toy", name, toyId, "remote=", remoteName, "stack=", stack, ok, err)
+	return ok and err ~= false
+end
+
 function AR.Cons.canAutoConsumeAnyPotionNow()
 	local cfg_t = cfg()
 	if cfg_t.autoConsumeEnabled ~= true then
@@ -8914,6 +9054,12 @@ local AR_CONS_TICK_PRIO = {
 		toggleCfgKey="consumeShiny",           reserveCfgKey="consumeReserveShiny",      idCfgKey="consumePotionIdShiny" },
 	{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
 		toggleCfgKey="consumeHugeHunter",      reserveCfgKey="consumeReserveHugeHunter", idCfgKey="consumePotionIdHugeHunter" },
+	{ fn="toy",       name="ToyBone",     prio=3,  cond="inDottedBox",
+		toggleCfgKey="consumeToyBone",         reserveCfgKey="consumeReserveToyBone",    idCfgKey="consumeToyIdBone", remoteCfgKey="consumeToyRemoteBone" },
+	{ fn="toy",       name="ToyBall",     prio=3,  cond="inDottedBox",
+		toggleCfgKey="consumeToyBall",         reserveCfgKey="consumeReserveToyBall",    idCfgKey="consumeToyIdBall", remoteCfgKey="consumeToyRemoteBall" },
+	{ fn="toy",       name="SqueakyToy",  prio=3,  cond="inDottedBox",
+		toggleCfgKey="consumeSqueakyToy",      reserveCfgKey="consumeReserveSqueakyToy", idCfgKey="consumeToyIdSqueaky", remoteCfgKey="consumeToyRemoteSqueaky" },
 }
 AR.Cons.tickPrioPotions = AR_CONS_TICK_PRIO
 
@@ -8954,6 +9100,8 @@ function AR.Cons.tick()
 					consumed = AR.Cons.tryConsumeSprinkler(e.name, id, reserve)
 				elseif e.fn == "potion" then
 					consumed = AR.Cons.tryConsumePotion(e.name, id, reserve)
+				elseif e.fn == "toy" then
+					consumed = AR.Cons.tryConsumeToy(e.name, id, cfg_t[e.remoteCfgKey], reserve)
 				end
 				if consumed then
 					actionsDone += 1
