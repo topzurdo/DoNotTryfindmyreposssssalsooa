@@ -4392,21 +4392,37 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 
 	-- Универсальная проверка активных random events
 	local function hasActiveRandomEvent(keyword)
-		if not RandomEventCmds or type(RandomEventCmds.GetActive) ~= "function" then
-			return false
-		end
-		local active = RandomEventCmds.GetActive()
-		if type(active) ~= "table" then
-			return false
-		end
-		for uid, ev in pairs(active) do
-			if ev and ev.dir and type(ev.dir) == "string" then
-				local dirLower = string.lower(ev.dir)
-				if string.find(dirLower, keyword, 1, true) then
-					return true
+		-- Проверка через RandomEventCmds.GetActive()
+		if RandomEventCmds and type(RandomEventCmds.GetActive) == "function" then
+			local active = RandomEventCmds.GetActive()
+			if type(active) == "table" then
+				for uid, ev in pairs(active) do
+					if ev and ev.dir and type(ev.dir) == "string" then
+						local dirLower = string.lower(ev.dir)
+						if string.find(dirLower, keyword, 1, true) then
+							return true
+						end
+					end
 				end
 			end
 		end
+		-- Прямая проверка объектов в Workspace.__THINGS.RandomEvents
+		pcall(function()
+			local reFolder = workspace:FindFirstChild("__THINGS")
+			if reFolder then
+				local randomEvents = reFolder:FindFirstChild("RandomEvents")
+				if randomEvents then
+					for _, obj in pairs(randomEvents:GetChildren()) do
+						if obj and obj.Name then
+							local nameLower = string.lower(obj.Name)
+							if string.find(nameLower, keyword, 1, true) then
+								return true
+							end
+						end
+					end
+				end
+			end
+		end)
 		return false
 	end
 
@@ -4426,6 +4442,11 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 		local uid = miscUidForPreferredIds({ "Basic Coin Jar", "Magic Coin Jar", "Giant Coin Jar" })
 		if uid and try("CoinJar_Spawn", "coin jar", uid) then
+			task.wait(3)
+			local fc = AutoRankRuntimeState.farmCandidateCache
+			fc.list = nil
+			fc.diag = nil
+			fc.at = -1e9
 			return
 		end
 	end
@@ -4436,6 +4457,11 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 		local uid = miscUidForIds({ "Basic Item Jar" })
 		if uid and try("ItemJar_Spawn", "item jar", uid) then
+			task.wait(3)
+			local fc = AutoRankRuntimeState.farmCandidateCache
+			fc.list = nil
+			fc.diag = nil
+			fc.at = -1e9
 			return
 		end
 	end
@@ -4465,6 +4491,13 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 		local uid = miscUidForIds({ "Comet" })
 		if uid and try("Comet_Spawn", "comet", uid) then
+			-- Задержка чтобы комета успела зарегистрироваться как breakable (до 5 сек по коду игры)
+			task.wait(6)
+			-- Форсируем очистку кэша фарма чтобы петы увидели новую комету
+			local fc = AutoRankRuntimeState.farmCandidateCache
+			fc.list = nil
+			fc.diag = nil
+			fc.at = -1e9
 			return
 		end
 	end
@@ -4475,6 +4508,11 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 		local uid = miscUidForIds({ "Mini Pinata" })
 		if uid and try("MiniPinata_Consume", "mini pinata", uid) then
+			task.wait(3)
+			local fc = AutoRankRuntimeState.farmCandidateCache
+			fc.list = nil
+			fc.diag = nil
+			fc.at = -1e9
 			return
 		end
 	end
@@ -4485,6 +4523,11 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 		local uid = miscUidForIds({ "Mini Lucky Block" })
 		if uid and try("MiniLuckyBlock_Consume", "mini lucky block", uid) then
+			task.wait(3)
+			local fc = AutoRankRuntimeState.farmCandidateCache
+			fc.list = nil
+			fc.diag = nil
+			fc.at = -1e9
 			return
 		end
 	end
