@@ -4420,12 +4420,20 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 	end
 	if string.find(blob, "coin jar", 1, true) then
+		if hasActiveRandomEvent("coin") or hasActiveRandomEvent("jar") then
+			traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "CoinJar_Spawn", "skip - already active coin jar")
+			return
+		end
 		local uid = miscUidForPreferredIds({ "Basic Coin Jar", "Magic Coin Jar", "Giant Coin Jar" })
 		if uid and try("CoinJar_Spawn", "coin jar", uid) then
 			return
 		end
 	end
 	if string.find(blob, "item jar", 1, true) then
+		if hasActiveRandomEvent("item") or hasActiveRandomEvent("jar") then
+			traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "ItemJar_Spawn", "skip - already active item jar")
+			return
+		end
 		local uid = miscUidForIds({ "Basic Item Jar" })
 		if uid and try("ItemJar_Spawn", "item jar", uid) then
 			return
