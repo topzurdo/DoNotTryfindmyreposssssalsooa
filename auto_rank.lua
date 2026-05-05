@@ -1681,8 +1681,16 @@ local function tryAutoBuyEggSlots()
 		local invOk = false
 		local errMsg = nil
 		local r, e = AR.Net.invoke("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd)
-		invOk = r ~= false and r ~= nil
-		errMsg = e
+		if type(r) == "string" then
+			errMsg = r
+			invOk = false
+		elseif r == true and type(e) == "string" and e ~= "" then
+			invOk = false
+			errMsg = e
+		else
+			invOk = r ~= false and r ~= nil
+			errMsg = e
+		end
 		log("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd, totalCost, invOk, errMsg)
 		if invOk then
 			tryCloseMachineTabIfConfigured()
@@ -3233,11 +3241,16 @@ function ARG.pickTrackedObjective()
 			local ok, res = pcall(gen.Callback)
 			if ok and type(res) == "table" then
 				res = ARG.normalizeGoalCallbackResult(res)
+				-- Luau: 0 is falsy — never treat Priority==0 as "missing" or every low-prio goal becomes badShape.
+				if type(res.Displays) == "table" and type(res.Priority) ~= "number" then
+					local pn = tonumber(res.Priority)
+					res.Priority = (pn ~= nil) and pn or 0
+				end
 			end
 			if not ok then
 				pickDiag.callbackErr += 1
 				hint(gen.Name .. ":cb_" .. tostring(res):sub(1, 48))
-			elseif type(res) ~= "table" or not res.Priority or not res.Displays then
+			elseif type(res) ~= "table" or type(res.Displays) ~= "table" or type(res.Priority) ~= "number" then
 				pickDiag.invalidShape += 1
 				hint(gen.Name .. ":no_Priority_or_Displays")
 			else
@@ -6593,9 +6606,7 @@ AR.ARC = (function()
 				if zn > 0 then
 					return zn, false
 				end
-				if cfg().hatchProgressFallbackEggMaxOwnedZoneOnly ~= false then
-					return 0, false
-				end
+				-- Max-owned zone had no affordable egg: fall through to zone scan / global pick instead of hard 0.
 			end
 		end
 		-- Без активной цели GoalCmds (progress-only): не брать яйцо по спавну/старой зоне — только глобальный pickEggNumber.

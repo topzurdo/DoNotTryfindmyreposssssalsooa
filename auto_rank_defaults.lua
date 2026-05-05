@@ -370,6 +370,7 @@ return {
 	hatchReserveForNextZoneEvenWhenQuestIncomplete = true,
 	-- Если дорогое яйцо не вылупить из‑за резерва на следующую зону — искать дешевле среди яиц зоны GetMaxOwnedZone().
 	hatchProgressTryCheaperEggWhenReserveBlocks = true,
+	-- Ограничивает дешёвый fallback внутри hatch (резерв валюты) зоной GetMaxOwnedZone; pickEggNumberForHatch по-прежнему сначала берёт яйцо из max-owned зоны, затем глобально если там нет affordable.
 	hatchProgressFallbackEggMaxOwnedZoneOnly = true,
 	-- Снять hatchAsyncGuard вместе с hatchBusy, когда клиент уже не OpeningEgg (убирает минуты «hatch_busy» при pulse.flags=false).
 	hatchAsyncGuardClearWithHatchBusyEarlyRelease = true,
