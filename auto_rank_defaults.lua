@@ -42,15 +42,19 @@ return {
 	ignoreZoneGateQuests = false,
 	zonePurchaseInterval = 0.55,
 	teleportToMaxFarmZone = true,
-	teleportMaxZoneClientPivotOnly = true,
+	teleportMaxZoneClientPivotOnly = false,
 	teleportClientPivotWhenSameZone = false,
 	teleportClientPivotNearStuds = 32,
-	questEggTeleportClientPivotOnly = true,
+	questEggTeleportClientPivotOnly = false,
 	teleportInterval = 10,
 	teleportPivotYOffset = 3,
 	teleportPivotRepeatCount = 5,
 	teleportPivotRepeatDelayFrames = 1,
 	teleportCannonWorkaround = false,
+	-- После Teleports_RequestTeleport не вызывать PivotTo-повторы (конфликт с пушкой/состоянием канона).
+	teleportPivotRepeatAfterServerTeleport = false,
+	-- То же для телепорта к яйцу квеста по сети.
+	questEggTeleportPivotRepeatAfterServer = false,
 	autoDismissRebirthUi = true,
 	rebirthDismissInterval = 0.28,
 	hatchAfterPivotDelay = 0.38,
@@ -336,8 +340,8 @@ return {
 		"upgrade enchants machine",
 	},
 	hatchReserveCurrencyForNextZone = true,
-	-- Если true: при progress-only вылупе НЕ резервировать монету на следующую зону (экономия выключена).
-	hatchReserveSkipForProgressOnly = false,
+	-- Если true: при progress-only вылупе НЕ резервировать монету на следующую зону (иначе постоянный no_currency / reserve_next при фарме без квеста).
+	hatchReserveSkipForProgressOnly = true,
 	hatchNextZoneReserveMultiplier = 1.05,
 	hatchReserveForNextZoneEvenWhenQuestIncomplete = true,
 	-- Если дорогое яйцо не вылупить из‑за резерва на следующую зону — искать дешевле среди яиц зоны GetMaxOwnedZone().
@@ -378,6 +382,10 @@ return {
 	questTravelWorldDirectNetworkInterval = 2.6,
 	questTravelTechRequireRebirth4 = true,
 	-- Если после RequestTechRocket остаёмся в основном мире без IsTeleportingWorld2 — позже повторяем удалёнку + триггер ракеты Rainbow Road.
+	-- Только Network.Fire(RequestTechRocket); без Pivot к ракете / fire ProximityPrompt (дубль с «пушкой»).
+	questTravelTechRocketPhysicalEngage = false,
+	-- Мин. сек между двумя RequestTechRocket (resolve + stuck retry, forceThrottle и т.д.). 0 — выключить анти-дубль.
+	questTravelTechRocketMinGapSec = 0.15,
 	questTravelTechRetryEnabled = true,
 	questTravelTechRetryStuckAfterSec = 7,
 	questTravelTechRetryEverySec = 4.5,
@@ -401,7 +409,10 @@ return {
 	fileLogVerbose = true,
 	traceInterval = 4,
 	ensureModulesInterval = 0.35,
-	ensureModulesInitialDelaySec = 3,
+	-- После queue_on_teleport / смены Place дефолт 3с оставлял все Client-модули nil → спам modules_missing, пустой фарм, GoalCmds_missing. Ставь >0 только если нужна искусственная пауза.
+	ensureModulesInitialDelaySec = 0,
+	-- Пока действует задержка выше — не слать verbose pulse (ложные pulse.*).
+	verbosePulseSkipDuringModulesDefer = true,
 	heartbeatErrorWarn = true,
 
 	disableBuiltInAutoTapper = true,
@@ -447,6 +458,8 @@ return {
 	},
 
 	autoConsumeEnabled = true,
+	-- На том же hbIntervalConsumables уже идёт AR.Cons.tick (флаги/зелья по id). Legacy-квестовые зелья по тиру иначе могут сработать в том же heartbeat-движении вторым расходом.
+	consumablesLegacySkipQuestPotionsWhenAutoConsume = true,
 	consumablesTickInterval = 2,
 	consumeFlagsHasty = true,
 	consumeFlagsStrength = true,

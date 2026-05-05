@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 13
+local AUTO_RANK_RUNTIME_VERSION = 17
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -605,7 +605,13 @@ function AR.Net.invoke(name, ...)
 	netRecord()
 	local ok, a, b, c, d = pcall(arNetDoInvoke, name, ...)
 	if not ok then
-		traceThrottled("net_err_invoke_" .. tostring(name), 5, "net", "invoke err", name, a)
+		local iv = 5
+		local tag = "net_err_invoke_" .. tostring(name)
+		if name == "GiftBag_Open" and type(a) == "string" and string.find(a, "assertion", 1, true) then
+			tag = "net_err_invoke_GiftBag_Open_assert"
+			iv = tonumber(cfg().giftBagNetInvokeAssertLogThrottleSec) or 45
+		end
+		traceThrottled(tag, iv, "net", "invoke err", name, a)
 		return nil, a
 	end
 	return a, b, c, d
@@ -4110,6 +4116,9 @@ function ARQ.giftBagTryOpenOne(pickId, pickUid, beforeAmt)
 		attempts[1] = function()
 			return AR.Net.invoke("GiftBag_Open", pickId, pickUid)
 		end
+		attempts[2] = function()
+			return AR.Net.invoke("GiftBag_Open", pickId)
+		end
 	else
 		attempts[1] = function()
 			return AR.Net.invoke("GiftBag_Open", pickId)
@@ -4408,6 +4417,15 @@ function ARQ.tryTravelWorldDirectNetworkFire(genName, opts)
 		elseif (Ticks.travelTechStuck_anchorStartTick or 0) <= 0 then
 			Ticks.travelTechStuck_anchorStartTick = now
 		end
+		local gap = tonumber(cfg().questTravelTechRocketMinGapSec)
+		if gap == nil then
+			gap = 0.15
+		elseif gap < 0 then
+			gap = 0
+		end
+		if gap > 0 and now - (Ticks.lastRequestTechRocketTick or 0) < gap then
+			return false
+		end
 	end
 	local iv = tonumber(cfg().questTravelWorldDirectNetworkInterval) or 2.6
 	if opts.forceThrottle ~= true and now - Ticks.lastTravelWorldDirectNetworkTick < iv then
@@ -4494,6 +4512,21 @@ function ARQ.tryTravelToTechRocketPhysicalEngage(genName)
 	return false
 end
 
+-- Один выбор за вызов: физ. engage уже дергает RequestTechRocket там где нужно — без второго Fire снаружи.
+function ARQ.tryTravelTechRocketAssist(genName, opts)
+	opts = opts and type(opts) == "table" and opts or {}
+	if cfg().questTravelTechRocketPhysicalEngage == true then
+		local engaged = false
+		pcall(function()
+			engaged = ARQ.tryTravelToTechRocketPhysicalEngage(genName) == true
+		end)
+		if engaged then
+			return true
+		end
+	end
+	return ARQ.tryTravelWorldDirectNetworkFire(genName, { forceThrottle = opts.forceThrottle == true }) == true
+end
+
 function ARQ.tryTravelToTechStuckRetry(tracked)
 	if cfg().questTravelTechRetryEnabled ~= true then
 		return
@@ -4562,13 +4595,10 @@ function ARQ.tryTravelToTechStuckRetry(tracked)
 		Ticks.travelTechRetryCountSession,
 		"/",
 		maxA,
-		"(RequestTechRocket + ракета)"
+		"(RequestTechRocket)"
 	)
 	pcall(function()
-		ARQ.tryTravelWorldDirectNetworkFire(genName, { forceThrottle = true })
-	end)
-	pcall(function()
-		ARQ.tryTravelToTechRocketPhysicalEngage(genName)
+		ARQ.tryTravelTechRocketAssist(genName, { forceThrottle = true })
 	end)
 end
 
@@ -4634,10 +4664,7 @@ function ARQ.maybeAutoTravelToTechWhenNoGoal(tracked)
 			log("Travel To Tech assist (GoalCmds no_goal)", cur, "interval", iv)
 		end
 		pcall(function()
-			ARQ.tryTravelWorldDirectNetworkFire(phantom._generatorName, { forceThrottle = true })
-		end)
-		pcall(function()
-			ARQ.tryTravelToTechRocketPhysicalEngage(phantom._generatorName)
+			ARQ.tryTravelTechRocketAssist(phantom._generatorName, { forceThrottle = true })
 		end)
 	end
 	return phantom
@@ -5501,7 +5528,11 @@ function AR.Cons.tryAutoBuffConsumablesPulseLegacy()
 		ARG.refreshTrackedObjective()
 	end)
 	pcall(function()
-		AR.Cons.tryQuestConsumePotionLegacy()
+		local skipQuestPotions = cfg().autoConsumeEnabled == true
+			and cfg().consumablesLegacySkipQuestPotionsWhenAutoConsume ~= false
+		if not skipQuestPotions then
+			AR.Cons.tryQuestConsumePotionLegacy()
+		end
 		AR.Cons.tryQuestConsumeFruitLegacy()
 		AR.Cons.tryAutoConsumeConsumablesLegacy()
 	end)
@@ -5922,6 +5953,19 @@ function AR.Teleports.schedulePivotRepeats(maxId)
 			end)
 		end
 	end)
+end
+
+function AR.Teleports.questEggTeleportExecute(eggZoneId, eggId, canTeleportReason, logTag)
+	if cfg().questEggTeleportClientPivotOnly ~= false then
+		log(logTag .. " client pivot → zone", eggZoneId, "for", eggId, canTeleportReason)
+		AR.Teleports.schedulePivotRepeats(eggZoneId)
+	else
+		AR.Net.invoke("Teleports_RequestTeleport", eggZoneId)
+		log(logTag .. " TP → zone", eggZoneId, "for", eggId, canTeleportReason)
+		if cfg().questEggTeleportPivotRepeatAfterServer == true then
+			AR.Teleports.schedulePivotRepeats(eggZoneId)
+		end
+	end
 end
 
 AR.ARC = (function()
@@ -6504,6 +6548,10 @@ AR.ARC = (function()
 		end
 		traceThrottled("hatch_skip_" .. tostring(tag), 12, "hatch", tag, "progressOnly=", progressOnly, extra)
 	end
+	local deferSec = tonumber(cfg().ensureModulesInitialDelaySec) or 0
+	if deferSec > 0 and tick() - autoRankLoadTick < deferSec then
+		return
+	end
 	if not cfg().questAutoHatch or not HatchingCmds or not EggCmds or not HatchingTypes or not EggsUtil then
 		hatchSkipDiag("modules_missing")
 		return
@@ -6568,14 +6616,7 @@ AR.ARC = (function()
 				if progressOnly then
 					Ticks.lastProgressOnlyHatchTick = now
 				end
-				if cfg().questEggTeleportClientPivotOnly ~= false then
-					log("quest egg client pivot → zone", eggZ, "for", eggDir._id, reason)
-					AR.Teleports.schedulePivotRepeats(eggZ)
-				else
-					AR.Net.invoke("Teleports_RequestTeleport", eggZ)
-					log("quest egg TP → zone", eggZ, "for", eggDir._id, reason)
-					AR.Teleports.schedulePivotRepeats(eggZ)
-				end
+				AR.Teleports.questEggTeleportExecute(eggZ, eggDir._id, reason, "quest egg")
 				return true
 			end
 		end
@@ -6694,14 +6735,7 @@ AR.ARC = (function()
 								armHatchBusyEnd(math.max(cfg().hatchBusyHoldSeconds or 2.6, tonumber(cfg().hatchBusyHoldSecondsHidden) or 14))
 								scheduleHatchBusyEarlyRelease(hatchBusyToken)
 								Ticks.lastProgressOnlyHatchTick = now
-								if cfg().questEggTeleportClientPivotOnly ~= false then
-									log("progress hatch cheaper egg pivot → zone", eggZ, "for", ed._id, reason)
-									AR.Teleports.schedulePivotRepeats(eggZ)
-								else
-									AR.Net.invoke("Teleports_RequestTeleport", eggZ)
-									log("progress hatch TP → zone", eggZ, "for", ed._id)
-									AR.Teleports.schedulePivotRepeats(eggZ)
-								end
+								AR.Teleports.questEggTeleportExecute(eggZ, ed._id, reason, "progress hatch cheaper egg")
 								return true
 							end
 							allow = false
@@ -6946,8 +6980,10 @@ function AutoRankRuntimeState.tryTeleportToMaxFarmZone(trackedObjective, isHatch
 		log("Teleports_RequestTeleport failed", maxZoneId)
 		return
 	end
-	log("Teleport pivot (server+client)", maxZoneId, "from", cur)
-	AR.Teleports.schedulePivotRepeats(maxZoneId)
+	log("Teleport (server)", maxZoneId, "from", cur)
+	if cfg().teleportPivotRepeatAfterServerTeleport == true then
+		AR.Teleports.schedulePivotRepeats(maxZoneId)
+	end
 end
 
 function AutoRankRuntimeState.getBreakableFarmCenterPosition(zoneId)
@@ -7741,7 +7777,15 @@ function AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedObjective, isHa
 	AutoRankRuntimeState.diagTeleport = d
 end
 
+function AutoRankRuntimeState.modulesDeferActive()
+	local d = tonumber(cfg().ensureModulesInitialDelaySec) or 0
+	return d > 0 and tick() - autoRankLoadTick < d
+end
+
 function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
+	if AutoRankRuntimeState.modulesDeferActive() and cfg().verbosePulseSkipDuringModulesDefer ~= false then
+		return
+	end
 	local df = AutoRankRuntimeState.diagFarm or {}
 	local dq = AutoRankRuntimeState.diagQuest or {}
 	local dt = AutoRankRuntimeState.diagTeleport or {}
@@ -7768,7 +7812,16 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 		df.posSource
 	)
 	if type(df.perClass) == "table" then
-		trace("pulse.farm.perClass", df.perClass)
+		local ks = {}
+		for k in pairs(df.perClass) do
+			table.insert(ks, tostring(k))
+		end
+		table.sort(ks)
+		local pcParts = {}
+		for _, k in ipairs(ks) do
+			pcParts[#pcParts + 1] = string.format("%s=%s", k, tostring(df.perClass[k]))
+		end
+		trace("pulse.farm.perClass", table.concat(pcParts, ", "))
 	end
 	local ql = dq.ok and "OK" or "NO"
 	local qSnippet = dq.snippet or dq.detail or ""
