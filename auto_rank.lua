@@ -175,6 +175,18 @@ do
 	end
 end
 do
+	local v = G.AutoRank._arConsumablesBugfixV7 or 0
+	if v < 1 then
+		G.AutoRank.consumeCoins = G.AutoRank.consumeCoins ~= false
+		G.AutoRank.consumeReserveCoins = tonumber(G.AutoRank.consumeReserveCoins) or 0
+		G.AutoRank.consumePotionIdCoins = type(G.AutoRank.consumePotionIdCoins) == "string" and G.AutoRank.consumePotionIdCoins ~= "" and G.AutoRank.consumePotionIdCoins or "Coins"
+		G.AutoRank.consumeFruitsAuto = G.AutoRank.consumeFruitsAuto ~= false
+		G.AutoRank.consumeReserveFruits = tonumber(G.AutoRank.consumeReserveFruits) or 0
+		G.AutoRank.consumeFruitMaxPerTick = math.max(1, tonumber(G.AutoRank.consumeFruitMaxPerTick) or 4)
+		G.AutoRank._arConsumablesBugfixV7 = 1
+	end
+end
+do
 	local v = G.AutoRank._arEggOpeningUiMigrate or 0
 	if v < 1 then
 		-- Глобальный Mouse.Button1Down по всем коннекшенам ломал чужой UI; бандлы во время hatch давали GiftBag assertion.
@@ -5782,6 +5794,101 @@ function AR.Cons.getFruitItemClass()
 	return FruitItem
 end
 
+function AR.Cons.fruitRawInventoryAmount(data)
+	if type(data) ~= "table" then
+		return 0
+	end
+	return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+end
+
+--- Headroom for FruitCmds.Consume (queue / max); used by legacy + modern fruit auto-consume.
+function AR.Cons.fruitQueueHeadroom(uid, data)
+	if not FruitCmds or type(uid) ~= "string" then
+		return 0
+	end
+	local maxC = 0
+	pcall(function()
+		maxC = FruitCmds.GetMaxConsume(uid) or 0
+	end)
+	if maxC > 0 then
+		return maxC
+	end
+	if type(data) ~= "table" or type(data.id) ~= "string" then
+		return 0
+	end
+	local queueLimit = 0
+	pcall(function()
+		queueLimit = tonumber(FruitCmds.ComputeFruitQueueLimit and FruitCmds.ComputeFruitQueueLimit()) or 0
+	end)
+	if queueLimit <= 0 then
+		return 0
+	end
+	local activeN = 0
+	pcall(function()
+		local okHas, active = FruitCmds.Has(data.id)
+		if okHas and type(active) == "table" then
+			activeN = #(active.Shiny or {}) + #(active.Normal or {})
+		end
+	end)
+	local amount = AR.Cons.fruitRawInventoryAmount(data)
+	return math.max(0, math.min(queueLimit - activeN, amount))
+end
+
+--- Try FruitCmds.Consume(amount, 1, no-arg) until headroom drops or all variants fail.
+function AR.Cons.fruitConsumeUidWithFallback(uid, take, idTag)
+	if not FruitCmds or type(uid) ~= "string" or type(FruitCmds.Consume) ~= "function" then
+		return false, nil
+	end
+	local function headroomNow()
+		local s = Save and Save.Get and Save.Get()
+		local row = s and s.Inventory and s.Inventory.Fruit and s.Inventory.Fruit[uid]
+		return AR.Cons.fruitQueueHeadroom(uid, row)
+	end
+	local before = headroomNow()
+	if before < 1 then
+		return false, nil
+	end
+	local tries = {}
+	local t1 = math.min(tonumber(take) or 1, before)
+	if t1 >= 1 then
+		table.insert(tries, t1)
+	end
+	if t1 ~= 1 then
+		table.insert(tries, 1)
+	end
+	table.insert(tries, "all")
+	local seen = {}
+	for _, spec in ipairs(tries) do
+		local key = tostring(spec)
+		if seen[key] then
+			continue
+		end
+		seen[key] = true
+		local b = headroomNow()
+		if b < 1 then
+			return true, key
+		end
+		if spec == "all" then
+			pcall(function()
+				FruitCmds.Consume(uid)
+			end)
+			log("Fruits: Consume try", uid, idTag, "variant=noArg")
+		else
+			pcall(function()
+				FruitCmds.Consume(uid, spec)
+			end)
+			log("Fruits: Consume try", uid, idTag, "variant=", spec)
+		end
+		local a = headroomNow()
+		if a < b then
+			log("Fruits: Consume ok", uid, idTag, "was=", b, "now=", a, "variant=", tostring(spec))
+			return true, tostring(spec)
+		end
+	end
+	traceThrottled("fruit_consume_no_effect", 12, "fruit", "uid=", uid, "id=", idTag, "headroom=", before)
+	return false, nil
+end
+
 function AR.Cons.canUsePotionTier(tier)
 	local tierOk = true
 	if MasteryCmds and MasteryCmds.CanUsePotion then
@@ -5945,44 +6052,10 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 	end)
 	local FruitItem = AR.Cons.getFruitItemClass()
 	local cap = tonumber(cfg().questConsumeFruitMaxAtOnce) or 4
-	local function rawInventoryAmount(data)
-		if type(data) ~= "table" then
-			return 0
-		end
-		return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
-	end
-	local function computeFruitHeadroom(uid, data)
-		local maxC = 0
-		pcall(function()
-			maxC = FruitCmds.GetMaxConsume(uid) or 0
-		end)
-		if maxC > 0 then
-			return maxC
-		end
-		if type(data) ~= "table" or type(data.id) ~= "string" then
-			return 0
-		end
-		local queueLimit = 0
-		pcall(function()
-			queueLimit = tonumber(FruitCmds.ComputeFruitQueueLimit and FruitCmds.ComputeFruitQueueLimit()) or 0
-		end)
-		if queueLimit <= 0 then
-			return 0
-		end
-		local activeN = 0
-		pcall(function()
-			local okHas, active = FruitCmds.Has(data.id)
-			if okHas and type(active) == "table" then
-				activeN = #(active.Shiny or {}) + #(active.Normal or {})
-			end
-		end)
-		local amount = rawInventoryAmount(data)
-		return math.max(0, math.min(queueLimit - activeN, amount))
-	end
 	local candidates = {}
 	for uid, data in pairs(s.Inventory.Fruit) do
 		if type(uid) == "string" then
-			local maxC = computeFruitHeadroom(uid, data)
+			local maxC = AR.Cons.fruitQueueHeadroom(uid, data)
 			if maxC >= 1 then
 				local tier = tonumber(data and data.tn) or 1
 				local shiny = false
@@ -6047,7 +6120,7 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 		end
 		for uid, data in pairs(invNow) do
 			if type(uid) == "string" then
-				local maxC = computeFruitHeadroom(uid, data)
+				local maxC = AR.Cons.fruitQueueHeadroom(uid, data)
 				if maxC >= 1 then
 					local tier = tonumber(data and data.tn) or 1
 					local shiny = false
@@ -6105,14 +6178,105 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 		if take < 1 then
 			break
 		end
+		local hBefore = pick.maxC
 		Ticks.lastFruitConsumeTick = now
-		pcall(function()
-			FruitCmds.Consume(pick.uid, take)
-		end)
-		log("Fruits: Consume", pick.uid, pick.id, take)
-		remaining -= take
-		actions += 1
+		local okF = AR.Cons.fruitConsumeUidWithFallback(pick.uid, take, pick.id)
+		if okF then
+			local s2 = Save and Save.Get and Save.Get()
+			local row2 = s2 and s2.Inventory and s2.Inventory.Fruit and s2.Inventory.Fruit[pick.uid]
+			local hAfter = AR.Cons.fruitQueueHeadroom(pick.uid, row2)
+			local delta = math.max(1, hBefore - hAfter)
+			remaining -= delta
+			actions += 1
+		else
+			traceThrottled("fruit_legacy_pulse_stall", 10, "fruit", pick.uid, pick.id, "take=", take)
+			break
+		end
 	end
+end
+
+function AR.Cons.tryConsumeFruitModernTick(cfg_t, e)
+	if cfg().autoConsumeBuffs == false or ARQ.buffConsumablesInstanceBlocked() then
+		return false
+	end
+	if cfg().questConsumeFruits == false then
+		return false
+	end
+	if not FruitCmds or not InventoryCmds or not Save or type(Save.Get) ~= "function" then
+		return false
+	end
+	local reserve = tonumber(cfg_t[e.reserveCfgKey]) or 0
+	local maxTake = math.max(1, math.floor(tonumber(cfg_t[e.maxCfgKey]) or 4))
+	local s = Save.Get()
+	if not s or not s.Inventory or type(s.Inventory.Fruit) ~= "table" then
+		return false
+	end
+	local cont = nil
+	pcall(function()
+		cont = InventoryCmds.Container()
+	end)
+	local FruitItem = AR.Cons.getFruitItemClass()
+	local candidates = {}
+	for uid, data in pairs(s.Inventory.Fruit) do
+		if type(uid) == "string" and AR.Cons.fruitRawInventoryAmount(data) > reserve then
+			local maxC = AR.Cons.fruitQueueHeadroom(uid, data)
+			if maxC >= 1 then
+				local tier = tonumber(data and data.tn) or 1
+				local shiny = false
+				if cont and FruitItem then
+					local item = cont:Get(uid, FruitItem)
+					if item then
+						if item.GetTier then
+							pcall(function()
+								local t = item:GetTier()
+								if type(t) == "number" then
+									tier = t
+								end
+							end)
+						end
+						if item.IsShiny then
+							pcall(function()
+								shiny = item:IsShiny() == true
+							end)
+						end
+					end
+				end
+				table.insert(candidates, {
+					uid = uid,
+					id = data and data.id,
+					maxC = maxC,
+					tier = tier,
+					shiny = shiny,
+				})
+			end
+		end
+	end
+	if #candidates == 0 then
+		return false
+	end
+	if cfg().questConsumeFruitsPreferMaxTier ~= false then
+		table.sort(candidates, function(a, b)
+			if a.tier ~= b.tier then
+				return a.tier > b.tier
+			end
+			if a.shiny ~= b.shiny then
+				return a.shiny
+			end
+			if a.maxC ~= b.maxC then
+				return a.maxC > b.maxC
+			end
+			return tostring(a.uid) < tostring(b.uid)
+		end)
+	else
+		table.sort(candidates, function(a, b)
+			return tostring(a.uid) < tostring(b.uid)
+		end)
+	end
+	local pick = candidates[1]
+	local take = math.min(maxTake, pick.maxC)
+	Ticks.lastFruitConsumeTick = tick()
+	log("Cons fruit", pick.id, pick.uid, "take=", take)
+	return AR.Cons.fruitConsumeUidWithFallback(pick.uid, take, pick.id)
 end
 
 function AR.Cons.tryAutoConsumeConsumablesLegacy()
@@ -6171,9 +6335,12 @@ function AR.Cons.tryAutoBuffConsumablesPulseLegacy()
 		ARG.refreshTrackedObjective()
 	end)
 	pcall(function()
+		local reqTier = QuestAssist.resolvePotionQuestTargetTier(cachedTrackedObjective)
 		local skipQuestPotions = cfg().autoConsumeEnabled == true
 			and cfg().consumablesLegacySkipQuestPotionsWhenAutoConsume ~= false
 			and AR.Cons.canAutoConsumeAnyPotionNow()
+			and type(reqTier) ~= "number"
+			and AR.Cons.modernAutoConsumeTouchesAllBackedUpPotionStacks()
 		if not skipQuestPotions then
 			AR.Cons.tryQuestConsumePotionLegacy()
 		end
@@ -6337,6 +6504,18 @@ do
 			hi = EggCmds.GetHighestEggNumberAvailable() or 0
 		end)
 		if hi <= 0 then
+			return nil
+		end
+		-- "best egg" / "your best eggs": same as HatchAssist.pick — highest affordable (respects reserves / infinity rules).
+		if string.find(blob, "best egg", 1, true) or string.find(blob, "your best eggs", 1, true) then
+			local arc = AR.ARC
+			local ha = arc and arc.HatchAssist
+			if ha and type(ha.pickEggNumber) == "function" then
+				local n = ha.pickEggNumber(tracked)
+				if type(n) == "number" and n > 0 then
+					return n
+				end
+			end
 			return nil
 		end
 		for i = hi, 1, -1 do
@@ -6875,7 +7054,7 @@ AR.ARC = (function()
 		if explicit and explicit > 0 then
 			return explicit, true
 		end
-		if tracked == nil and ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+		if ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
 			local mz = nil
 			pcall(function()
 				mz = select(1, ZoneCmds.GetMaxOwnedZone())
@@ -6884,6 +7063,10 @@ AR.ARC = (function()
 				local zn = HatchAssist.pickHighestEggInPhysicalZone(mz, nil)
 				if zn > 0 then
 					return zn, false
+				end
+				-- Если hatchOnlyMaxOwnedZone включен, не искать в других зонах
+				if cfg().hatchOnlyMaxOwnedZone then
+					return 0, false
 				end
 				-- Max-owned zone had no affordable egg: fall through to zone scan / global pick instead of hard 0.
 			end
@@ -9345,16 +9528,19 @@ function AR.Cons.tryConsumePotion(name, potionId, reserve)
 	end
 	local candidates = {}
 	for uid, data in pairs(s.Inventory.Potion) do
-		if type(uid) == "string" and type(data) == "table" and data.id == potionId then
-			local tier = tonumber(data.tn) or 1
-			local tierOk = true
-			if MasteryCmds and MasteryCmds.CanUsePotion then
-				pcall(function()
-					tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
-				end)
-			end
-			if tierOk then
-				table.insert(candidates, { uid = uid, tier = tier })
+		if type(uid) == "string" and type(data) == "table" then
+			local idMatch = data.id == potionId or data.id == potionId .. " Potion"
+			if idMatch then
+				local tier = tonumber(data.tn) or 1
+				local tierOk = true
+				if MasteryCmds and MasteryCmds.CanUsePotion then
+					pcall(function()
+						tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
+					end)
+				end
+				if tierOk then
+					table.insert(candidates, { uid = uid, tier = tier })
+				end
 			end
 		end
 	end
@@ -9427,6 +9613,27 @@ function AR.Cons.canAutoConsumeAnyPotionNow()
 	return false
 end
 
+--- False if some enabled modern potion has stack above reserve but its tick condition is not met (legacy quest potions may still be needed).
+function AR.Cons.modernAutoConsumeTouchesAllBackedUpPotionStacks()
+	local cfg_t = cfg()
+	if cfg_t.autoConsumeEnabled ~= true then
+		return true
+	end
+	for _, e in ipairs(AR.Cons.tickPrioPotions or {}) do
+		if e.fn == "potion" and cfg_t[e.toggleCfgKey] == true then
+			local pid = cfg_t[e.idCfgKey]
+			local reserve = tonumber(cfg_t[e.reserveCfgKey]) or 0
+			if type(pid) == "string" and pid ~= "" then
+				local stack = AR.Cons.inventoryAmountByDirId("Potion", pid)
+				if stack > reserve and not AR.Cons.conditionMet(e.cond) then
+					return false
+				end
+			end
+		end
+	end
+	return true
+end
+
 AR.Cons.SprinklerCmds = nil
 AR.Cons.failUntil = AR.Cons.failUntil or {}
 function AR.Cons.ensureSprinklerCmds()
@@ -9459,6 +9666,8 @@ local AR_CONS_TICK_PRIO = {
 		toggleCfgKey="consumeDamagePotion",    reserveCfgKey="consumeReserveDamagePotion", idCfgKey="consumePotionIdDamage" },
 	{ fn="potion",    name="Rainbow",     prio=4,  cond="alwaysOn",
 		toggleCfgKey="consumeRainbow",         reserveCfgKey="consumeReserveRainbow",    idCfgKey="consumePotionIdRainbow" },
+	{ fn="potion",    name="Coins",       prio=4,  cond="alwaysOn",
+		toggleCfgKey="consumeCoins",           reserveCfgKey="consumeReserveCoins",      idCfgKey="consumePotionIdCoins" },
 	{ fn="potion",    name="Shiny",       prio=4,  cond="alwaysOn",
 		toggleCfgKey="consumeShiny",           reserveCfgKey="consumeReserveShiny",      idCfgKey="consumePotionIdShiny" },
 	{ fn="potion",    name="HugeHunter",  prio=3,  cond="eggHatch",
@@ -9469,6 +9678,8 @@ local AR_CONS_TICK_PRIO = {
 		toggleCfgKey="consumeToyBall",         reserveCfgKey="consumeReserveToyBall",    idCfgKey="consumeToyIdBall", remoteCfgKey="consumeToyRemoteBall" },
 	{ fn="toy",       name="SqueakyToy",  prio=3,  cond="inDottedBox",
 		toggleCfgKey="consumeSqueakyToy",      reserveCfgKey="consumeReserveSqueakyToy", idCfgKey="consumeToyIdSqueaky", remoteCfgKey="consumeToyRemoteSqueaky" },
+	{ fn="fruit",    name="Fruit",        prio=3,  cond="alwaysOn",
+		toggleCfgKey="consumeFruitsAuto",    reserveCfgKey="consumeReserveFruits",     maxCfgKey="consumeFruitMaxPerTick" },
 }
 AR.Cons.tickPrioPotions = AR_CONS_TICK_PRIO
 
@@ -9499,24 +9710,28 @@ function AR.Cons.tick()
 	local actionsDone = 0
 	for _, e in ipairs(AR_CONS_TICK_PRIO) do
 		if cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
-			local id = cfg_t[e.idCfgKey]
-			local reserve = cfg_t[e.reserveCfgKey] or 0
-			if type(id) == "string" then
-				local consumed = false
-				if e.fn == "flag" then
-					consumed = AR.Cons.tryConsumeFlag(e.name, id, reserve)
-				elseif e.fn == "sprinkler" then
-					consumed = AR.Cons.tryConsumeSprinkler(e.name, id, reserve)
-				elseif e.fn == "potion" then
-					consumed = AR.Cons.tryConsumePotion(e.name, id, reserve)
-				elseif e.fn == "toy" then
-					consumed = AR.Cons.tryConsumeToy(e.name, id, cfg_t[e.remoteCfgKey], reserve)
-				end
-				if consumed then
-					actionsDone += 1
-					if actionsDone >= maxActions then
-						return
+			local consumed = false
+			if e.fn == "fruit" then
+				consumed = AR.Cons.tryConsumeFruitModernTick(cfg_t, e) == true
+			else
+				local id = cfg_t[e.idCfgKey]
+				local reserve = cfg_t[e.reserveCfgKey] or 0
+				if type(id) == "string" then
+					if e.fn == "flag" then
+						consumed = AR.Cons.tryConsumeFlag(e.name, id, reserve)
+					elseif e.fn == "sprinkler" then
+						consumed = AR.Cons.tryConsumeSprinkler(e.name, id, reserve)
+					elseif e.fn == "potion" then
+						consumed = AR.Cons.tryConsumePotion(e.name, id, reserve)
+					elseif e.fn == "toy" then
+						consumed = AR.Cons.tryConsumeToy(e.name, id, cfg_t[e.remoteCfgKey], reserve)
 					end
+				end
+			end
+			if consumed then
+				actionsDone += 1
+				if actionsDone >= maxActions then
+					return
 				end
 			end
 		end
@@ -9616,7 +9831,10 @@ AR.HB.tasks = {
 	{ tag = "daycare", interval = 1.0, fn = function() tryAutoDaycare() end },
 	{ tag = "questEnchant", interval = "hbIntervalEquipPets", fn = function()
 		pcall(function()
-			ARQ.tryQuestEquipEnchantFromInventory(AR.HB.state.isHatching == true or hatchAsyncPipelineActive())
+			local tr = AR.HB.state.trackedQuest
+			local eggMode = (Variables and Variables.OpeningEgg == true)
+				or (tr ~= nil and QuestAssist.objectiveMentionsEggOrHatch(tr) and hatchBusy == true)
+			ARQ.tryQuestEquipEnchantFromInventory(eggMode)
 		end)
 	end },
 	{ tag = "eggOpeningPrompt", interval = 0.32, fn = function() ARUI.tryClickEggOpeningPrompt() end },
