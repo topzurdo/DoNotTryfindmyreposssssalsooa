@@ -69,6 +69,10 @@ return {
 	hatchBusyEarlyReleaseMaxWait = 24,
 	hatchBusyEarlyReleasePoll = 0.22,
 	preferZoneEggWhenProgress = true,
+	-- "your best eggs": не падать на глобальный номер яйца (#127 в другом мире); при true — старый fallback pickEggNumber().
+	hatchBestEggsFallbackGlobalPick = false,
+	-- Глобальный «лучший» номер яйца: сканировать не выше GetHighestEggNumberAvailable (иначе всегда #291 и afford=false).
+	hatchGlobalScanCapToAvailable = true,
 	-- Если true: открывать яйца только в максимальной owned зоне, игнорируя квесты из других зон
 	hatchOnlyMaxOwnedZone = true,
 	questEggTeleportIfWrongZone = true,
@@ -272,6 +276,11 @@ return {
 	},
 	questAutoPlaceFlag = true,
 	questPlaceFlagInterval = 2,
+	-- true: только в rank UI dotted box (старое поведение). false: с фермы — FlexibleFlagCmds.Consume(..., amount) через GetMaxPlaceAutomaticContext.
+	questPlaceFlagRequireDottedBox = false,
+	-- За один вызов tryQuest: несколько Consume подряд (игра часто даёт ctx=1 за раз).
+	questPlaceFlagsMaxPerPulse = 5,
+	questPlaceFlagsInterConsumeDelay = 0.12,
 	questAutoPlaceFlagWithoutTrackedGoal = true,
 	questFlagNameFallbackOrder = {
 		"Strength Flag",

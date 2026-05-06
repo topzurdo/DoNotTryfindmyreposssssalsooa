@@ -6640,7 +6640,7 @@ do
 				local v = dir[key]
 				if type(v) == "string" and v ~= "" then
 					local z = AR.QuestWorldHelpers.normalizeZoneIdCandidate(v)
-					traceThrottled("egg_zone_dir_" .. tostring(n), 60, "hatch", "egg", n, "zone via dir["..key.."]="", v, "->", z)
+					traceThrottled("egg_zone_dir_" .. tostring(n), 60, "hatch", "egg", n, "zone via dir[" .. key .. "]=", v, "->", z)
 					return z
 				end
 			end
@@ -6673,11 +6673,27 @@ do
 		if hi <= 0 then
 			return nil
 		end
-		-- "best egg" / "your best eggs": same as HatchAssist.pick — highest affordable (respects reserves / infinity rules).
+		-- "best egg" / "your best eggs": привязка к физической зоне max-owned — иначе pickEggNumber() даёт глобальный номер (#127 Tech) и скрипт тянет в старый мир.
 		if string.find(blob, "best egg", 1, true) or string.find(blob, "your best eggs", 1, true) then
-			local arc = AR.ARC
-			local ha = arc and arc.HatchAssist
-			if ha and type(ha.pickEggNumber) == "function" then
+			local ha = AR.ARC and AR.ARC.HatchAssist
+			local mz = nil
+			local mzTbl = nil
+			if ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
+				pcall(function()
+					mz, mzTbl = ZoneCmds.GetMaxOwnedZone()
+				end)
+			end
+			if ha and type(ha.pickHighestEggInPhysicalZone) == "function" and type(mz) == "string" and mz ~= "" then
+				local zopts = { maxZoneNumber = mzTbl and mzTbl.ZoneNumber }
+				local zn = ha.pickHighestEggInPhysicalZone(mz, tracked, zopts)
+				if type(zn) ~= "number" or zn <= 0 then
+					zn = ha.pickHighestEggInPhysicalZone(mz, tracked, { ignoreAffordFilter = true, maxZoneNumber = zopts.maxZoneNumber })
+				end
+				if type(zn) == "number" and zn > 0 then
+					return zn
+				end
+			end
+			if cfg().hatchBestEggsFallbackGlobalPick == true and ha and type(ha.pickEggNumber) == "function" then
 				local n = ha.pickEggNumber(tracked)
 				if type(n) == "number" and n > 0 then
 					return n
@@ -6786,7 +6802,8 @@ do
 			log("flag_skip_modules", "FlexibleFlagCmds=", FlexibleFlagCmds and "OK" or "MISS", "MapCmds=", MapCmds and "OK" or "MISS", "InventoryCmds=", InventoryCmds and "OK" or "MISS")
 			return
 		end
-		if not safeInDottedBox() then
+		local dottedOk = safeInDottedBox()
+		if not dottedOk and cfg().questPlaceFlagRequireDottedBox then
 			log("flag_skip_not_dotted_box")
 			return
 		end
@@ -6844,6 +6861,25 @@ do
 			return
 		end
 
+		local function lastFlagQuotaFromBlob(s)
+			local last = nil
+			if type(s) == "string" then
+				for nm in string.gmatch(s, "use%s+(%d+)%s+flags") do
+					local v = tonumber(nm)
+					if v then
+						last = v
+					end
+				end
+				for nm in string.gmatch(s, "place%s+(%d+)%s+flags") do
+					local v = tonumber(nm)
+					if v then
+						last = v
+					end
+				end
+			end
+			return last
+		end
+
 		for _, flagNm in ipairs(orderedFlagNames()) do
 			local dirEntry = zoneDir[flagNm]
 			if dirEntry then
@@ -6861,10 +6897,107 @@ do
 					end)
 					if type(uid) == "string" and uid ~= "" then
 						Ticks.lastQuestFlagTick = now
-						local ok, res = pcall(function()
-							return FlexibleFlagCmds.Consume(flagNm, uid)
-						end)
-						log("quest FlexibleFlagCmds.Consume", flagNm, ok, res)
+						if dottedOk then
+							local ctx0 = nil
+							if FlexibleFlagCmds and type(FlexibleFlagCmds.GetMaxPlaceAutomaticContext) == "function" then
+								local gok, gv = pcall(function()
+									return FlexibleFlagCmds.GetMaxPlaceAutomaticContext(flagNm)
+								end)
+								if gok and type(gv) == "number" then
+									ctx0 = gv
+								end
+							end
+							local ok, res = pcall(function()
+								return FlexibleFlagCmds.Consume(flagNm, uid)
+							end)
+							log("quest FlexibleFlagCmds.Consume", flagNm, ok, res, "amt=", nil, "autoCtx=", ctx0, "dotted=", true)
+							return
+						end
+
+						local quotaLeft = lastFlagQuotaFromBlob(blobHint)
+						local maxPulse = math.max(1, tonumber(cfg().questPlaceFlagsMaxPerPulse) or 4)
+						local interDelay = tonumber(cfg().questPlaceFlagsInterConsumeDelay)
+
+						for iter = 1, maxPulse do
+							local items2 = nil
+							pcall(function()
+								items2 = cont:CollectAny(dirEntry)
+							end)
+							if not items2 or #items2 < 1 then
+								if iter == 1 then
+									log("flag_skip_collect_iter", "flag=", flagNm, "iter=", iter)
+								end
+								break
+							end
+							local it2 = items2[1]
+							local uid2 = nil
+							pcall(function()
+								if type(it2.GetUID) == "function" then
+									uid2 = it2:GetUID()
+								end
+							end)
+							if type(uid2) ~= "string" or uid2 == "" then
+								break
+							end
+							local ctx = nil
+							if FlexibleFlagCmds and type(FlexibleFlagCmds.GetMaxPlaceAutomaticContext) == "function" then
+								local gok, gv = pcall(function()
+									return FlexibleFlagCmds.GetMaxPlaceAutomaticContext(flagNm)
+								end)
+								if gok and type(gv) == "number" then
+									ctx = gv
+								end
+							end
+							local stackAmt = nil
+							pcall(function()
+								if type(it2.GetAmount) == "function" then
+									stackAmt = it2:GetAmount()
+								end
+							end)
+							local placeAmt = nil
+							if type(ctx) == "number" and ctx > 0 and type(stackAmt) == "number" and stackAmt > 0 then
+								local ask = stackAmt
+								if type(quotaLeft) == "number" and quotaLeft >= 1 then
+									ask = math.min(ask, quotaLeft)
+								end
+								placeAmt = math.min(ctx, ask)
+							end
+							if type(placeAmt) ~= "number" or placeAmt < 1 then
+								if iter == 1 then
+									log("flag_skip_auto_ctx", "flag=", flagNm, "ctx=", tostring(ctx), "dottedOk=", dottedOk)
+								end
+								break
+							end
+							local ok, res = pcall(function()
+								return FlexibleFlagCmds.Consume(flagNm, uid2, placeAmt)
+							end)
+							log(
+								"quest FlexibleFlagCmds.Consume",
+								flagNm,
+								ok,
+								res,
+								"amt=",
+								placeAmt,
+								"autoCtx=",
+								ctx,
+								"dotted=",
+								dottedOk,
+								"iter=",
+								iter
+							)
+							if not ok then
+								break
+							end
+							if type(quotaLeft) == "number" and quotaLeft >= 1 then
+								quotaLeft -= placeAmt
+								if quotaLeft < 1 then
+									break
+								end
+							end
+							if iter < maxPulse and type(interDelay) == "number" and interDelay > 0 then
+								task.wait(interDelay)
+							end
+						end
 						return
 					end
 				end
@@ -7212,7 +7345,11 @@ AR.ARC = (function()
 		return 0
 	end
 
-	function HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
+	function HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked, opts)
+		opts = opts or {}
+		local skipAfford = opts.ignoreAffordFilter == true
+		local maxOwnZN = opts.maxZoneNumber
+		local ownZFloor = type(maxOwnZN) == "number" and maxOwnZN > 0 and math.floor(maxOwnZN + 1e-6) or nil
 		if not zoneId or not EggsUtil or not EggCmds then
 			return 0
 		end
@@ -7235,7 +7372,10 @@ AR.ARC = (function()
 			if dir and dir._id then
 				if not (dir._id == "Infinity Egg" and not allowInf) then
 					local ez = AR.QuestWorldHelpers.getEggZoneIdForNumber(i)
-					if ez and eggZoneIdsEqual(ez, zoneId) and eggPassesAffordFilter(dir, false) then
+					local dznFloor = type(dir.zoneNumber) == "number" and dir.zoneNumber > 0 and math.floor(dir.zoneNumber + 1e-6)
+					local numOk = ownZFloor and dznFloor and dznFloor == ownZFloor
+					local strOk = ez and eggZoneIdsEqual(ez, zoneId)
+					if (numOk or strOk) and (skipAfford or eggPassesAffordFilter(dir, false)) then
 						return i
 					end
 				end
@@ -7259,7 +7399,7 @@ AR.ARC = (function()
 		end
 		log("hatch_pick_maxOwn", "id=", mz, "zn=", mzZN and mzZN.ZoneNumber)
 		if type(mz) == "string" and mz ~= "" then
-			local zn = HatchAssist.pickHighestEggInPhysicalZone(mz, nil)
+			local zn = HatchAssist.pickHighestEggInPhysicalZone(mz, nil, { maxZoneNumber = mzZN and mzZN.ZoneNumber })
 			if zn > 0 then
 				log("hatch_pick_from_maxOwn", zn, mz)
 				return zn, false
@@ -7297,7 +7437,16 @@ AR.ARC = (function()
 			end
 			log("hatch_pick_zone_progress", "orderedZones=", table.concat(ordered, ","))
 			for _, zoneId in ipairs(ordered) do
-				local zn = HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
+				local dirZN = nil
+				pcall(function()
+					if Directory and Directory.Zones then
+						local row = Directory.Zones[zoneId]
+						if row and type(row.ZoneNumber) == "number" then
+							dirZN = row.ZoneNumber
+						end
+					end
+				end)
+				local zn = HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked, { maxZoneNumber = dirZN })
 				if zn > 0 then
 					log("hatch_pick_from_zone_progress", zn, zoneId)
 					return zn, false
@@ -7319,9 +7468,13 @@ AR.ARC = (function()
 			end)
 			pcall(function() hi2Avail = EggCmds.GetHighestEggNumberAvailable() or 0 end)
 			if hi2 <= 0 then hi2 = hi2Avail end
-			traceThrottled("hatch_global_hi", 15, "hatch", "globalBest scan: maxNum=", hi2, "avail=", hi2Avail)
+			local scanTop = hi2
+			if cfg().hatchGlobalScanCapToAvailable ~= false and hi2Avail > 0 then
+				scanTop = math.min(hi2, hi2Avail)
+			end
+			traceThrottled("hatch_global_hi", 15, "hatch", "globalBest scan: maxNum=", hi2, "avail=", hi2Avail, "scanTop=", scanTop)
 			local allowInf = HatchAssist.infinityAllowed(tracked)
-			local n = hi2
+			local n = scanTop
 			while n > 0 do
 				local dir = safeEggByNumber(n)
 				if dir and dir._id then
