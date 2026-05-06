@@ -6622,15 +6622,29 @@ do
 			dir = EggsUtil.GetByNumber(n)
 		end)
 		if dir then
+			-- PS99 uses numeric zoneNumber, not string zone/Zone fields
+			if type(dir.zoneNumber) == "number" and dir.zoneNumber > 0 then
+				local zoneId = nil
+				pcall(function()
+					if ZonesUtil and type(ZonesUtil.GetZoneFromNumber) == "function" then
+						zoneId = select(1, ZonesUtil.GetZoneFromNumber(dir.zoneNumber))
+					end
+				end)
+				if zoneId then
+					local z = AR.QuestWorldHelpers.normalizeZoneIdCandidate(zoneId)
+					traceThrottled("egg_zone_num_" .. tostring(n), 60, "hatch", "egg", n, "zone via zoneNumber=", dir.zoneNumber, "->", z)
+					return z
+				end
+			end
 			for _, key in ipairs({ "zone", "Zone", "world", "World", "area", "Area" }) do
 				local v = dir[key]
 				if type(v) == "string" and v ~= "" then
 					local z = AR.QuestWorldHelpers.normalizeZoneIdCandidate(v)
-					traceThrottled("egg_zone_dir_" .. tostring(n), 60, "hatch", "egg", n, "zone via dir["..key.."]=", v, "->", z)
+					traceThrottled("egg_zone_dir_" .. tostring(n), 60, "hatch", "egg", n, "zone via dir["..key.."]="", v, "->", z)
 					return z
 				end
 			end
-			traceThrottled("egg_zone_dir_miss_" .. tostring(n), 60, "hatch", "egg", n, "no zone key in dir, id=", tostring(dir._id))
+			traceThrottled("egg_zone_dir_miss_" .. tostring(n), 60, "hatch", "egg", n, "no zone key in dir, id=", tostring(dir._id), "zoneNumber=", dir.zoneNumber)
 		else
 			traceThrottled("egg_zone_no_dir_" .. tostring(n), 60, "hatch", "egg", n, "no part and no dir entry")
 		end
