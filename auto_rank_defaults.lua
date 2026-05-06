@@ -4,10 +4,16 @@ return {
 	farmNormalBreakables = true,
 	-- Иначе во время hatchBusy/hatchAsyncGuard скрипт не шлёт Breakables_PlayerDealDamage — только петы клиента; суммарно копится меньше валюты.
 	farmAllowDamageWhileHatchPipeline = true,
-	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest", "Comet" },
+	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "SuperiorMiniChest", "Chest", "Comet" },
 	-- Часть random events (Coin Jar coins и т.д.) регистрируется в BreakableFrontend, но не попадает в типичные классы — добираем по BreakableUID на партях под __THINGS.RandomEvents.
 	farmMergeRandomEventBreakableParts = true,
 	farmPrioritizeRandomEventBreakables = true,
+	-- Mini-chest rank / зона: клиент часто индексирует их как Chest с dir.id вроде MiniChest*, а не отдельным классом; плюс fallback по BreakableUID в __THINGS.
+	farmMergeMiniChestFromChestClass = true,
+	farmMiniChestWorkspaceUidScan = true,
+	farmMiniChestUidScanRequireZoneMatch = false,
+	farmMiniChestUidScanMaxInstances = 4500,
+	farmPrioritizeMiniChestBreakables = true,
 	delayDamage = 0.16,
 	farmRadius = 420,
 	preferClosest = true,
@@ -102,6 +108,9 @@ return {
 	crossPlaceReloadUrl = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank.lua",
 	crossPlaceReloadReadfile = "",
 	crossPlaceReloadDelaySec = 3,
+	-- После kick / soft rejoin в тот же PlaceId JobId меняется, а queue_on_teleport может не вызваться — поднимаем свежий loadstring тем же URL.
+	samePlaceRejoinAutoReload = true,
+	samePlaceRejoinReloadIntervalSec = 2,
 	teleportToBreakableFarmCenter = true,
 	farmBreakablePullInterval = 1.15,
 	farmBreakableMinDist = 20,

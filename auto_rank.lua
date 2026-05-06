@@ -2334,6 +2334,67 @@ restoreRuntimeHooks = function()
 end
 
 local crossPlaceQueueRegistered = false
+local samePlaceLastJobIdByPlace = {}
+
+local function buildAutoRankReloadSnippet()
+	local url = cfg().crossPlaceReloadUrl
+	local delay = tonumber(cfg().crossPlaceReloadDelaySec) or 3
+	if delay < 0 then
+		delay = 0
+	end
+	if type(url) ~= "string" or not string.match(url, "^https?://") then
+		return nil
+	end
+	local innerExec = "loadstring(game:HttpGet(" .. string.format("%q", url) .. ", true))()"
+	return string.format(
+		"task.delay(%g, function()\n\tlocal _ok, _err = pcall(function()\n\t\t%s\n\tend)\n\tif not _ok and warn then warn('[AutoRank reload]', _err) end\nend)",
+		delay,
+		innerExec
+	)
+end
+
+local lastSamePlaceJobPollTick = 0
+
+local function tryScheduleSamePlaceRejoinScriptReload()
+	if cfg().samePlaceRejoinAutoReload ~= true then
+		return
+	end
+	local pollIv = tonumber(cfg().samePlaceRejoinReloadIntervalSec) or 2
+	if pollIv < 0.25 then
+		pollIv = 0.25
+	end
+	local now = tick()
+	if now - lastSamePlaceJobPollTick < pollIv then
+		return
+	end
+	lastSamePlaceJobPollTick = now
+	local jid = game.JobId
+	if type(jid) ~= "string" or jid == "" then
+		return
+	end
+	local pid = tostring(game.PlaceId)
+	local prev = samePlaceLastJobIdByPlace[pid]
+	if prev == nil then
+		samePlaceLastJobIdByPlace[pid] = jid
+		return
+	end
+	if prev == jid then
+		return
+	end
+	samePlaceLastJobIdByPlace[pid] = jid
+	local snippet = buildAutoRankReloadSnippet()
+	if not snippet then
+		traceThrottled("same_place_rejoin_no_url", 30, "same_place_rejoin", "нужен crossPlaceReloadUrl (https) для перезапуска после реджойна")
+		return
+	end
+	trace("same_place_rejoin", "JobId изменился — перезапуск скрипта (тот же Place)", "было", prev, "стало", jid)
+	local okLd, errLd = pcall(function()
+		loadstring(snippet)()
+	end)
+	if not okLd then
+		trace("same_place_rejoin", "loadstring(schedule) failed", errLd)
+	end
+end
 
 local function tryRegisterCrossPlaceScriptReload()
 	if crossPlaceQueueRegistered or cfg().crossPlaceAutoReload ~= true then
@@ -2344,23 +2405,11 @@ local function tryRegisterCrossPlaceScriptReload()
 		traceThrottled("cross_place_no_queue", 45, "cross_place", "queue_on_teleport не найден (добавь UNC в экзекьютор)")
 		return
 	end
-	local url = cfg().crossPlaceReloadUrl
-	local delay = tonumber(cfg().crossPlaceReloadDelaySec) or 3
-	if delay < 0 then
-		delay = 0
-	end
-	local innerExec
-	if type(url) == "string" and string.match(url, "^https?://") then
-		innerExec = "loadstring(game:HttpGet(" .. string.format("%q", url) .. ", true))()"
-	else
+	local snippet = buildAutoRankReloadSnippet()
+	if not snippet then
 		trace("cross_place", "crossPlaceAutoReload: укажи crossPlaceReloadUrl (https:// raw, без readfile)")
 		return
 	end
-	local snippet = string.format(
-		"task.delay(%g, function()\n\tlocal _ok, _err = pcall(function()\n\t\t%s\n\tend)\n\tif not _ok and warn then warn('[AutoRank cross-place]', _err) end\nend)",
-		delay,
-		innerExec
-	)
 	local okReg, qerr = pcall(q, snippet)
 	if okReg then
 		crossPlaceQueueRegistered = true
@@ -8940,6 +8989,26 @@ function AutoRankRuntimeState.farmBreakableClassList()
 	return t
 end
 
+function AutoRankRuntimeState.farmDirIdIsMiniChestLike(dir)
+	if type(dir) ~= "table" then
+		return false
+	end
+	local id = dir.id or dir.Id or dir._id or dir.breakableId
+	if type(id) ~= "string" then
+		return false
+	end
+	id = string.lower(id)
+	return string.find(id, "minichest", 1, true) ~= nil
+end
+
+function AutoRankRuntimeState.farmWantsMiniChestClassMerged()
+	for _, cls in ipairs(AutoRankRuntimeState.farmBreakableClassList()) do
+		if cls == "MiniChest" or cls == "SuperiorMiniChest" then
+			return true
+		end
+	end
+	return false
+end
 
 function AutoRankRuntimeState.farmCandidateCacheStore(list, diag)
 	local fc = AutoRankRuntimeState.farmCandidateCache
@@ -9040,6 +9109,33 @@ function AutoRankRuntimeState.farmMergeBreakableChunks(zoneId, inInstance, class
 			diag.perClass[cls] = n
 		end
 	end
+	if
+		not inInstance
+		and zoneId
+		and type(zoneId) == "string"
+		and zoneId ~= ""
+		and cfg().farmMergeMiniChestFromChestClass ~= false
+		and AutoRankRuntimeState.farmWantsMiniChestClassMerged()
+	then
+		local ch = nil
+		local okCh, errCh = pcall(function()
+			ch = BreakableFrontend.AllByZoneAndClass(zoneId, "Chest")
+		end)
+		if not okCh then
+			diag.perClass.MiniChest_from_Chest = "err:" .. tostring(errCh)
+		else
+			local nMini = 0
+			for uid, entry in pairs(ch or {}) do
+				if type(entry) == "table" and AutoRankRuntimeState.farmDirIdIsMiniChestLike(entry.dir) then
+					byUid[uid] = entry
+					nMini += 1
+				end
+			end
+			if nMini > 0 then
+				diag.perClass.MiniChest_from_Chest = nMini
+			end
+		end
+	end
 	for _ in pairs(byUid) do
 		diag.rawTotal += 1
 	end
@@ -9087,6 +9183,69 @@ function AutoRankRuntimeState.farmMergeRandomEventBreakableUids(zoneId, inInstan
 	return added
 end
 
+function AutoRankRuntimeState.farmMergeMiniChestWorkspaceUidScan(zoneId, inInstance, pos, r, byUid, diag)
+	if cfg().farmMiniChestWorkspaceUidScan == false then
+		return 0
+	end
+	if inInstance or not BreakableFrontend or type(BreakableFrontend.Get) ~= "function" then
+		return 0
+	end
+	if not AutoRankRuntimeState.farmWantsMiniChestClassMerged() then
+		return 0
+	end
+	if not pos or not r or type(zoneId) ~= "string" or zoneId == "" then
+		return 0
+	end
+	local things = workspace:FindFirstChild("__THINGS")
+	if not things then
+		return 0
+	end
+	local maxIter = tonumber(cfg().farmMiniChestUidScanMaxInstances) or 4500
+	if maxIter < 1 then
+		maxIter = 4500
+	end
+	local requireZ = cfg().farmMiniChestUidScanRequireZoneMatch == true
+	local allowShielded = cfg().farmExplosiveBreakableAssist == true
+	local added = 0
+	local n = 0
+	for _, inst in ipairs(things:GetDescendants()) do
+		if not inst:IsA("BasePart") then
+			continue
+		end
+		n += 1
+		if n > maxIter then
+			break
+		end
+		local uid = inst:GetAttribute("BreakableUID")
+		if type(uid) == "string" and uid ~= "" and not byUid[uid] then
+			local entry = nil
+			pcall(function()
+				entry = BreakableFrontend.Get(uid)
+			end)
+			if entry and entry.model and entry.dir and AutoRankRuntimeState.farmDirIdIsMiniChestLike(entry.dir) then
+				if not entry.dir.NoTapping and (not entry.disableDamage or allowShielded) then
+					local pp = entry.model.PrimaryPart
+					if pp and (pp.Position - pos).Magnitude <= r then
+						if requireZ then
+							local pid = inst:GetAttribute("ParentID")
+							if type(pid) ~= "string" or pid == "" or not AR.zonesIdMatch(pid, zoneId) then
+								continue
+							end
+						end
+						byUid[uid] = entry
+						added += 1
+					end
+				end
+			end
+		end
+	end
+	if added > 0 then
+		diag.miniChestUidScanMerged = added
+	end
+	diag.miniChestUidScanVisited = n
+	return added
+end
+
 function AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 	local out = {}
 	for uid, entry in pairs(byUid) do
@@ -9110,6 +9269,13 @@ function AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 		if reFolder then
 			local ma = a.entry.model and a.entry.model:IsDescendantOf(reFolder)
 			local mb = b.entry.model and b.entry.model:IsDescendantOf(reFolder)
+			if ma ~= mb then
+				return ma
+			end
+		end
+		if cfg().farmPrioritizeMiniChestBreakables ~= false then
+			local ma = AutoRankRuntimeState.farmDirIdIsMiniChestLike(a.entry and a.entry.dir)
+			local mb = AutoRankRuntimeState.farmDirIdIsMiniChestLike(b.entry and b.entry.dir)
 			if ma ~= mb then
 				return ma
 			end
@@ -9172,6 +9338,10 @@ function AutoRankRuntimeState.collectFarmCandidates()
 	local nRe = AutoRankRuntimeState.farmMergeRandomEventBreakableUids(zoneId, diag.inInstance, pos, r, byUid, diag)
 	if nRe > 0 then
 		diag.rawTotal += nRe
+	end
+	local nMc = AutoRankRuntimeState.farmMergeMiniChestWorkspaceUidScan(zoneId, diag.inInstance, pos, r, byUid, diag)
+	if nMc > 0 then
+		diag.rawTotal += nMc
 	end
 	local out = AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 	AutoRankRuntimeState.farmFinalizeEmptyListDiag(diag, r, out)
@@ -10484,6 +10654,9 @@ AR.HB.tasks = {
 	{ tag = "msgDialogYes", interval = 0.5, fn = function() AutoRankRuntimeState.tryAutoClickMessageDialogYes() end },
 	{ tag = "netDebugHook", interval = 1.0, fn = function() tryInstallNetworkInvokeDebugHook() end },
 	{ tag = "kickGuard", interval = 1.0, fn = function() tryInstallKickGuard() end },
+	{ tag = "samePlaceRejoinReload", interval = 0.5, fn = function()
+		pcall(tryScheduleSamePlaceRejoinScriptReload)
+	end },
 	{ tag = "orbMagnet", interval = 0.5, fn = function() patchOrbMagnet() end },
 	{ tag = "orbNetHook", interval = 0.5, fn = function() hookOrbNetwork() end },
 	{ tag = "tutorial", interval = 1.0, fn = function() AutoRankRuntimeState.tutorialTick() end },
