@@ -142,6 +142,12 @@ return {
 	rankStarMachineRetryIncludingEquipped = true,
 	--[[ Дополнять wantG/wantR по скрейпу GUIs.Ranks: любая пара cur/tot (cur<tot) в контексте «golden/rainbow» — даже если в Save уже нет незакрытого Type 4/40/5/41 (рассинхрон MakeTitle/Directories со слотом). ]]
 	rankStarMachineInferFromGuiBlob = true,
+	--[[ При явном false: ждём MachineCmds.CanUse после pivot (как клиент). true или nil/absent после мержа — не блокировать (часто false во время cannon/OpeningEgg при валидном Invoke). ]]
+	rankStarMachineSkipCanUseCheck = true,
+	--[[ Полностью не проверять FFlags перед Invoke (редко нужно). ]]
+	rankStarMachineSkipFflagCheck = false,
+	--[[ Если FFlags.Keys[GoldMachine]/RainbowMachine == nil в среде — не блокировать (иначе машина никогда не вызывается). ]]
+	rankStarMachineFflagMissingKeyAllowsTry = true,
 	--[[ При активных GOLD/RAINBOW в Save.Goals и синтезе RankStars не чаще хэтча, чем раз в N сек (даёт машинам окон между открытиями яиц). ]]
 	rankStarHatchMinIntervalWhenMachineGoalSec = 4.5,
 	--[[ Только алмазные breakables: если false и в слоте одновременно обычные break/миникороба — не сужать карту, только сортировка (rankStarPrioritizeDiamondWhenMixedBreakGoals). ]]

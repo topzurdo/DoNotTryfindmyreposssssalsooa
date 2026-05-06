@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 26
+local AUTO_RANK_RUNTIME_VERSION = 27
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -10024,8 +10024,92 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		end
 		return math.max(1, 10 - math.floor(red + 1e-6))
 	end
+	local function machineFflagAllows(machNameShort)
+		if cfg().rankStarMachineSkipFflagCheck == true then
+			return true
+		end
+		if not FFlags or type(FFlags.Keys) ~= "table" or type(FFlags.Get) ~= "function" then
+			return cfg().rankStarMachineFflagMissingKeyAllowsTry ~= false
+		end
+		if FFlags.Keys[machNameShort] == nil then
+			return cfg().rankStarMachineFflagMissingKeyAllowsTry ~= false
+		end
+		return safeFflagKeyOnOrBypass(machNameShort)
+	end
+	local function diagMachine(kind)
+		local machName = kind == "rainbow" and "RainbowMachine" or "GoldMachine"
+		local perkNm = kind == "rainbow" and "RainbowReduction" or "GoldReduction"
+		local candField = kind == "rainbow" and "CanRainbowMachine" or "CanGoldMachine"
+		local perBatch = perkBatch(perkNm)
+		local fOk = machineFflagAllows(machName)
+		local cu = "_"
+		if cfg().rankStarMachineSkipCanUseCheck ~= false then
+			cu = "skipCfg"
+		elseif MachineCmds and type(MachineCmds.CanUse) == "function" then
+			pcall(function()
+				cu = tostring(MachineCmds.CanUse(machName) == true)
+			end)
+		end
+		local nUid, maxAmt, nAmtGePb, nMethodTrue, nBoth = 0, 0, 0, 0, 0
+		for uid, pdata in pairs(s.Inventory.Pet) do
+			if type(pdata) == "table" and not pdata._lk then
+				nUid += 1
+				local petObj = nil
+				pcall(function()
+					petObj = ItemsLib.Pet:Get(uid)
+				end)
+				if petObj then
+					local amt = 0
+					pcall(function()
+						amt = tonumber(petObj:GetAmount()) or 0
+					end)
+					if amt > maxAmt then
+						maxAmt = amt
+					end
+					if amt >= perBatch then
+						nAmtGePb += 1
+					end
+					local okM = false
+					pcall(function()
+						local fn = petObj[candField]
+						if type(fn) == "function" then
+							okM = fn(petObj) == true
+						end
+					end)
+					if okM then
+						nMethodTrue += 1
+					end
+					if okM and amt >= perBatch then
+						nBoth += 1
+					end
+				end
+			end
+		end
+		traceThrottled(
+			"rankstar_machine_diag_" .. kind,
+			12,
+			"[rankStars] machine diag",
+			kind,
+			"fflagOk=",
+			fOk,
+			"canUse=",
+			cu,
+			"perBatch=",
+			perBatch,
+			"uids=",
+			nUid,
+			"maxAmt=",
+			maxAmt,
+			"amtGeBatch=",
+			nAmtGePb,
+			candField .. "=",
+			nMethodTrue,
+			"ready=",
+			nBoth
+		)
+	end
 	local function pivotMachine(machShort)
-		if not cfg().pivotBeforeRemotePurchases then
+		if not cfg().pivotBeforeRemotePurchases and cfg().rankStarMachineSkipCanUseCheck ~= false then
 			return true
 		end
 		if not MachineCmds or type(MachineCmds.GetClosestMachine) ~= "function" then
@@ -10055,10 +10139,13 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		local machName = kind == "rainbow" and "RainbowMachine" or "GoldMachine"
 		local perkNm = kind == "rainbow" and "RainbowReduction" or "GoldReduction"
 		local candField = kind == "rainbow" and "CanRainbowMachine" or "CanGoldMachine"
-		if not safeFflagKeyOnOrBypass(machName) then
+		if not machineFflagAllows(machName) then
 			return false
 		end
-		if MachineCmds and type(MachineCmds.CanUse) == "function" then
+		-- CanUse часто завязана на расстояние до машины; клиент же проверяет её до UI — старый порядок
+		-- (CanUse затем pivot) давал постоянный false во время фарма в другой зоне и нулевые конверты.
+		pivotMachine(machName)
+		if cfg().rankStarMachineSkipCanUseCheck == false and MachineCmds and type(MachineCmds.CanUse) == "function" then
 			local cu = false
 			pcall(function()
 				cu = MachineCmds.CanUse(machName) == true
@@ -10067,7 +10154,6 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 				return false
 			end
 		end
-		pivotMachine(machName)
 		local perBatch = perkBatch(perkNm)
 		local bestPet, bestBatch = nil, 0
 		for uid, pdata in pairs(s.Inventory.Pet) do
@@ -10152,6 +10238,12 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 				return
 			end
 		end
+	end
+	if wantG then
+		diagMachine("gold")
+	end
+	if wantR then
+		diagMachine("rainbow")
 	end
 	traceThrottled("rankstar_machine_no_activation", 10, "[rankStars] machine skipped",
 		"wantG=", wantG, "wantR=", wantR, "skipEq=", skipEq, "retryInclEq=", retryInclEq)
