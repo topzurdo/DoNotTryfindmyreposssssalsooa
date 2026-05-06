@@ -7222,32 +7222,8 @@ AR.ARC = (function()
 				if zn > 0 then
 					return zn, false
 				end
-				-- zn == 0: either no egg physically in zone, or egg exists but unaffordable.
-				-- If the zone has any egg at all (ignoring afford), then we're out of money — stop hatching.
-				local zoneHasEgg = false
-				if EggsUtil and EggCmds then
-					local hi2 = 0
-					pcall(function() hi2 = EggCmds.GetHighestEggNumberAvailable() or 0 end)
-					if hi2 <= 0 then pcall(function() hi2 = EggsUtil.GetMaximumEggNumber() or 0 end) end
-					local allowInf = HatchAssist.infinityAllowed(tracked)
-					for i = hi2, 1, -1 do
-						local dir = safeEggByNumber(i)
-						if dir and dir._id and not (dir._id == "Infinity Egg" and not allowInf) then
-							local ez = AR.QuestWorldHelpers.getEggZoneIdForNumber(i)
-							if ez and eggZoneIdsEqual(ez, mz) then
-								zoneHasEgg = true
-								break
-							end
-						end
-					end
-				end
-				if zoneHasEgg then
-					-- Zone egg exists but we can't afford it — stop and farm.
-					traceThrottled("hatch_zone_unaffordable", 15, "hatch", "best zone egg unaffordable, stopping to farm:", mz)
-					return 0, false
-				end
-				-- No physical egg in this zone: fall through to global pick.
-				traceThrottled("hatch_zone_no_egg_fallthrough", 60, "hatch", "no egg in max zone, falling through to global pick:", mz)
+				-- zn == 0: no affordable egg in max zone — fall through to global best-egg check below.
+				traceThrottled("hatch_zone_no_afford_fallthrough", 60, "hatch", "no affordable egg in max zone, falling through:", mz)
 			end
 		end
 		-- Без активной цели GoalCmds (progress-only): не брать яйцо по спавну/старой зоне — только глобальный pickEggNumber.
@@ -7285,7 +7261,44 @@ AR.ARC = (function()
 				end
 			end
 		end
-		return HatchAssist.pickEggNumber(tracked), false
+		-- Final: find the single best accessible egg (highest number, ignoring afford filter).
+		-- If affordable → open it. If not → return 0 (stop and farm, never fall back to cheaper eggs).
+		local globalBest = 0
+		local globalBestId = nil
+		if EggsUtil and EggCmds then
+			local hi2 = 0
+			pcall(function() hi2 = EggCmds.GetHighestEggNumberAvailable() or 0 end)
+			if hi2 <= 0 then pcall(function() hi2 = EggsUtil.GetMaximumEggNumber() or 0 end) end
+			local allowInf = HatchAssist.infinityAllowed(tracked)
+			local n = hi2
+			while n > 0 do
+				local dir = safeEggByNumber(n)
+				if dir and dir._id then
+					if dir._id == "Infinity Egg" then
+						if allowInf then
+							globalBest = n
+							globalBestId = dir._id
+							break
+						end
+					else
+						globalBest = n
+						globalBestId = dir._id
+						break
+					end
+				end
+				n -= 1
+			end
+		end
+		if globalBest > 0 then
+			local dir = safeEggByNumber(globalBest)
+			if eggPassesAffordFilter(dir, true) then
+				traceThrottled("hatch_global_best_pick", 15, "hatch", "global best egg pick:", globalBest, globalBestId)
+				return globalBest, false
+			end
+			traceThrottled("hatch_global_best_unaffordable", 5, "hatch", "best egg unaffordable, farming instead:", globalBest, globalBestId)
+			return 0, false
+		end
+		return 0, false
 	end
 
 	function HatchAssist.pivotForEgg(eggDir, tracked)
