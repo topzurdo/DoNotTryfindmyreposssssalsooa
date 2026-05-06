@@ -2099,6 +2099,31 @@ local kickGuardTeleportLogAt = {}
 local function antiKickAnyEnabled()
 	return cfg().kickGuardTryBlockClientKick == true
 		or cfg().kickGuardBlockTeleportToLobby == true
+		or cfg().kickGuardBlockTeleportSamePlaceId == true
+		or (type(cfg().kickGuardBlockTeleportToPlaceIds) == "table"
+			and next(cfg().kickGuardBlockTeleportToPlaceIds) ~= nil)
+end
+
+local function antiKickNamecallFirstPlaceId(method, args)
+	if type(args) ~= "table" then
+		return nil
+	end
+	if method == "Teleport" or method == "TeleportToPlaceInstance" then
+		return tonumber(args[1])
+	end
+	if method == "TeleportPartyAsync" then
+		local a1 = args[1]
+		return type(a1) == "number" and a1 or tonumber(a1)
+	end
+	if method == "TeleportAsync" then
+		for _, v in ipairs(args) do
+			local n = tonumber(v)
+			if n then
+				return n
+			end
+		end
+	end
+	return tonumber(args[1])
 end
 
 local function antiKickIsBlockedPlaceId(placeId)
@@ -2212,8 +2237,7 @@ local function tryInstallKickGuard()
 					end
 					return nil
 				end
-				if cfg().kickGuardBlockTeleportToLobby == true
-					and self == TeleportService
+				if self == TeleportService
 					and (method == "Teleport"
 						or method == "TeleportAsync"
 						or method == "TeleportToPlaceInstance"
@@ -2221,9 +2245,27 @@ local function tryInstallKickGuard()
 						or method == "TeleportPartyAsync")
 				then
 					local args = { ... }
-					local placeId = args[1]
-					antiKickLogTeleportDestination(method, placeId, args[2])
-					if antiKickIsBlockedPlaceId(placeId) then
+					local tpTargetId = antiKickNamecallFirstPlaceId(method, args)
+					if tpTargetId ~= nil then
+						antiKickLogTeleportDestination(method, tpTargetId, args[2])
+					elseif type(args[1]) == "number" then
+						antiKickLogTeleportDestination(method, args[1], args[2])
+					end
+					if cfg().kickGuardBlockTeleportSamePlaceId == true
+						and type(tpTargetId) == "number"
+						and tpTargetId == game.PlaceId
+					then
+						if cfg().kickGuardKickLog then
+							traceThrottled("kick_guard_tp_same_place", 4, "kick_guard",
+								"blocked TeleportService same-PlaceId rejoin:",
+								method)
+						end
+						return nil
+					end
+					if cfg().kickGuardBlockTeleportToLobby == true
+						and antiKickIsBlockedPlaceId(tpTargetId or tonumber(args[1]))
+					then
+						local placeId = tpTargetId or tonumber(args[1])
 						if cfg().kickGuardKickLog then
 							traceThrottled("kick_guard_tp_" .. tostring(placeId), 2, "kick_guard",
 								"blocked TeleportService:" .. method .. "(" .. tostring(placeId) .. ")")
@@ -9163,7 +9205,7 @@ function AutoRankRuntimeState.tryAutoEnableAutoFarm()
 		local enf = AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() == true
 		local periodic = hatchAsyncPipelineActive()
 			and cfg().petsAutoFarmEnableSnapPrimaryToFarmCenter ~= false
-			and cfg().petsAutoFarmReanchorWhileHatching ~= false
+			and cfg().petsAutoFarmReanchorWhileHatching ~= false 
 		local iv = tonumber(cfg().petsAutoFarmReanchorIntervalSec) or 6
 		if enf and not zoneChanged then
 			if not periodic then

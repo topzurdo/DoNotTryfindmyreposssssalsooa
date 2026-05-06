@@ -454,6 +454,8 @@ return {
 	kickGuardTryBlockClientKick = true,
 	kickGuardKickLog = true,
 	kickGuardBlockTeleportToLobby = false,
+	-- Блокирует TeleportService при цели == game.PlaceId (мягкий rejoin / кнопка re-join из ReplicatedFirst.Intro). Обмен мирами через PlaceFile.LocalPlaces другой PlaceId не трогается.
+	kickGuardBlockTeleportSamePlaceId = true,
 	kickGuardBlockTeleportToPlaceIds = {},
 	executorVirtualGuiClick = false,
 	log = false,
