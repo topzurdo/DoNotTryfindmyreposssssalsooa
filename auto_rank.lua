@@ -7488,9 +7488,10 @@ do
 								end
 							end
 							local ok, res = pcall(function()
-								return FlexibleFlagCmds.Consume(flagNm, uid)
+								--[[ Двухаргументный Consume часто ест весь стек → (xN) один тип; один слот как в AR.Cons.tryConsumeFlag. ]]
+								return FlexibleFlagCmds.Consume(flagNm, uid, 1)
 							end)
-							log("quest FlexibleFlagCmds.Consume", flagNm, ok, res, "amt=", nil, "autoCtx=", ctx0, "dotted=", true)
+							log("quest FlexibleFlagCmds.Consume", flagNm, ok, res, "amt=", 1, "autoCtx=", ctx0, "dotted=", true)
 							return
 						end
 
@@ -8518,8 +8519,13 @@ AR.ARC = (function()
 			hatchSkipDiag("gui_non_egg_goal_blocks_progress")
 			return
 		end
+		--[[ flattenObjectiveSansRankGoalsGui режет scraped rank GUI — без guiMentions/objectiveHints «hatch/best egg» теряются. ]]
 		local blobGate = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
-		if not string.find(blobGate, "hatch", 1, true) and not string.find(blobGate, "egg", 1, true) then
+		local allowHatchDespiteUrgent = QuestAssist.objectiveMentionsEggOrHatch(tracked)
+			or QuestAssist.guiMentionsEggRankGoal()
+			or string.find(blobGate, "hatch", 1, true)
+			or string.find(blobGate, "egg", 1, true)
+		if not allowHatchDespiteUrgent then
 			hatchSkipDiag("gui_non_egg_goal_blocks_hatch", gen)
 			return
 		end
@@ -8530,7 +8536,11 @@ AR.ARC = (function()
 	end
 	if not cfg().questAutoHatchAnytime and not progressOnly then
 		local blob = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
-		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
+		local allowEggHatchObjective = QuestAssist.objectiveMentionsEggOrHatch(tracked)
+			or QuestAssist.guiMentionsEggRankGoal()
+			or string.find(blob, "hatch", 1, true)
+			or string.find(blob, "egg", 1, true)
+		if not allowEggHatchObjective then
 			hatchSkipDiag("objective_not_egg_hatch", gen)
 			return
 		end
@@ -11283,6 +11293,7 @@ function AR.Cons.tryConsumeFlag(name, flagId, reserve)
 		AR.Cons.debug("flag", name, "consume", cid, "uid=", best.uid, "take=", take, "stack=", stack, "res=", err)
 		if not okRes then
 			AR.Cons.failUntil[failKey] = tick() + (tonumber(cfg().consumeFailureCooldown) or 8)
+			return false
 		end
 		return true
 	end
@@ -11564,9 +11575,22 @@ function AR.Cons.tick()
 	AR.Cons.ensureSprinklerCmds()
 	local cfg_t = cfg()
 	local maxActions = math.max(1, math.floor(tonumber(cfg_t.consumeMaxActionsPerTick) or 1))
+	local maxFlagsPT = tonumber(cfg_t.consumeMaxFlagsPerTick)
+	if maxFlagsPT == nil then
+		maxFlagsPT = 1
+	end
+	maxFlagsPT = math.max(0, math.floor(maxFlagsPT))
+	local flagsDoneThisTick = 0
 	local actionsDone = 0
 	for _, e in ipairs(AR.Cons.tickPrioPotions or {}) do
 		if cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
+			if e.fn == "flag" then
+				if maxFlagsPT <= 0 then
+					continue
+				elseif flagsDoneThisTick >= maxFlagsPT then
+					continue
+				end
+			end
 			local consumed = false
 			if e.fn == "fruit" then
 				consumed = AR.Cons.tryConsumeFruitModernTick(cfg_t, e) == true
@@ -11586,6 +11610,9 @@ function AR.Cons.tick()
 				end
 			end
 			if consumed then
+				if e.fn == "flag" then
+					flagsDoneThisTick += 1
+				end
 				actionsDone += 1
 				if actionsDone >= maxActions then
 					return

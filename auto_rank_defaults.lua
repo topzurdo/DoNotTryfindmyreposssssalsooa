@@ -584,6 +584,8 @@ return {
 	consumeToyBall = true,
 	consumeSqueakyToy = true,
 	consumeMaxActionsPerTick = 3,
+	--[[ Сколько флагов (типов) авто-consume ставит за один AR.Cons.tick; раньше 3 действия/tick жгли Hasty+Strength+Magnet подряд. 0 = не трогать флаги в этом tick. ]]
+	consumeMaxFlagsPerTick = 1,
 	consumeReserveHasty = 0,
 	consumeReserveStrength = 0,
 	consumeReserveMagnet = 0,
