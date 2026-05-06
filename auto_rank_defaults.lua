@@ -2,6 +2,8 @@ return {
 	enabled = true,
 	safeMode = false,
 	farmNormalBreakables = true,
+	-- Иначе во время hatchBusy/hatchAsyncGuard скрипт не шлёт Breakables_PlayerDealDamage — только петы клиента; суммарно копится меньше валюты.
+	farmAllowDamageWhileHatchPipeline = true,
 	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest", "Comet" },
 	-- Часть random events (Coin Jar coins и т.д.) регистрируется в BreakableFrontend, но не попадает в типичные классы — добираем по BreakableUID на партях под __THINGS.RandomEvents.
 	farmMergeRandomEventBreakableParts = true,
@@ -578,6 +580,8 @@ return {
 	petsAlwaysFarmEnabled = true,
 	petsAlwaysFarmTickInterval = 8.0,
 	petsAlwaysFarmListenForceDisable = true,
+	-- При Enable() клиент записывает GetStartingPosition = позиция HRP В ЭТОТ МОМЕНТ — после Hatch ForceDisable включение автофермы у яйца залипает якорь на игроке, петы остаются с тобой. Snap: один кадр ставим HRP в центр BREAKABLE_SPAWNS max-owned зоны и сразу откатываем CFrame/velocity.
+	petsAutoFarmEnableSnapPrimaryToFarmCenter = true,
 
 	hbSchedulerEnabled = true,
 	hbIntervalDealDamage = 0,

@@ -8229,6 +8229,11 @@ AR.ARC = (function()
 		hatchSkipDiag("no_currency", eggDir and eggDir._id)
 		return
 	end
+	if Ticks.hatchEggPipelineInFlight == true then
+		hatchSkipDiag("hatch_prep_busy_dup")
+		return
+	end
+	Ticks.hatchEggPipelineInFlight = true
 	local pivotDelay = cfg().hatchAfterPivotDelay or 0.38
 	local busyHold = cfg().hatchBusyHoldSeconds or 2.6
 	local guardSec = math.max(tonumber(cfg().hatchAsyncTeleportBlockSeconds) or 18, pivotDelay + 1)
@@ -8240,6 +8245,7 @@ AR.ARC = (function()
 		task.wait(pivotDelay)
 		local okProx, whyProx = HatchAssist.validateNearEgg(eggDir, tracked)
 		if not okProx then
+			Ticks.hatchEggPipelineInFlight = false
 			local bs = tonumber(cfg().progressHatchBackoffOnProximityFailSec) or 18
 			Ticks.progressHatchProximityBackoffUntil = tick() + math.max(2, bs)
 			if progressOnly then
@@ -8279,12 +8285,11 @@ AR.ARC = (function()
 	scheduleHatchBusyEarlyRelease(hatchBusyToken)
 	task.spawn(function()
 		Ticks.hatchAsyncGuardUntil = tick() + guardSec
-		pcall(function()
+		local outerOk, outerErr = pcall(function()
 			if not didSyncEggPrep then
 				HatchAssist.pivotForEgg(eggDir, tracked)
 				task.wait(pivotDelay)
 			end
-			Ticks.hatchEggPipelineInFlight = true
 			local innerOk, innerErr = pcall(function()
 				log("hatch_setup_start", "egg=", eggDir and eggDir._id, "n=", n, "amt=", hatchAmt, "customUid=", customUid or "nil")
 				if customUid then
@@ -8316,10 +8321,7 @@ AR.ARC = (function()
 						modWorld and modWorld.id
 					)
 					if cfg().hatchAbortBusyOnAttemptFail ~= false then
-						local wl = string.lower(tostring(hatchWhy or ""))
-						if string.find(wl, "too far", 1, true) then
-							forceClearHatchBusyPipeline("attempt_too_far", progressOnly, hatchWhy)
-						end
+						forceClearHatchBusyPipeline("attempt_hatch_false", progressOnly, hatchWhy)
 					end
 				end
 				if cfg().hideEggHatching and hatchOk == true then
@@ -8341,11 +8343,14 @@ AR.ARC = (function()
 					end
 				end
 			end)
-			Ticks.hatchEggPipelineInFlight = false
 			if not innerOk then
 				traceThrottled("hatch_pipeline_inner_err", 8, "hatch", innerErr or "inner_fail")
 			end
 		end)
+		Ticks.hatchEggPipelineInFlight = false
+		if not outerOk then
+			traceThrottled("hatch_pipeline_outer_err", 8, "hatch", outerErr or "outer_fail")
+		end
 		Ticks.hatchAsyncGuardUntil = tick() + (tonumber(cfg().hatchAsyncPostPipelineGrace) or 3)
 	end)
 	if progressOnly then
@@ -9153,7 +9158,7 @@ function AutoRankRuntimeState.tryAutoEnableAutoFarm()
 		if AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() and not zoneChanged then
 			return
 		end
-		AutoFarmCmds.Enable()
+		AR.Pets.invokeAutoFarmEnableWithFarmAnchorSnap()
 		autoFarmEnabledZone = curZone
 		log("AutoFarm_Enable fired zone=", tostring(curZone))
 	end)
@@ -9171,7 +9176,7 @@ function AutoRankRuntimeState.dealDamageSignal(uid)
 end
 
 function AutoRankRuntimeState.farmTick()
-	if hatchAsyncPipelineActive() then
+	if hatchAsyncPipelineActive() and cfg().farmAllowDamageWhileHatchPipeline == false then
 		return
 	end
 	if not cfg().farmNormalBreakables then
@@ -9523,6 +9528,79 @@ function AR.Pets.requestPivotToFarm()
 	end
 end
 
+--- AutoFarmCmds.Enable() всегда копирует старт автотапа из PrimaryPart после Invoke; см. RS.Library.Client.AutoFarmCmds привязка v6 к позиции игрока.
+function AR.Pets.invokeAutoFarmEnableWithFarmAnchorSnap()
+	if not AutoFarmCmds or type(AutoFarmCmds.Enable) ~= "function" then
+		return false
+	end
+	if cfg().petsAutoFarmEnableSnapPrimaryToFarmCenter == false then
+		pcall(function()
+			AutoFarmCmds.Enable()
+		end)
+		return true
+	end
+	local pp = LocalPlayer.Character and LocalPlayer.Character.PrimaryPart
+	local maxId = nil
+	local okMax = ZoneCmds and pcall(function()
+		maxId = select(1, ZoneCmds.GetMaxOwnedZone())
+	end)
+	if not pp or not okMax or type(maxId) ~= "string" then
+		pcall(function()
+			AutoFarmCmds.Enable()
+		end)
+		return true
+	end
+	local anchor = nil
+	if AutoRankRuntimeState and type(AutoRankRuntimeState.getBreakableFarmCenterPosition) == "function" then
+		anchor = AutoRankRuntimeState.getBreakableFarmCenterPosition(maxId)
+	end
+	if not anchor then
+		pcall(function()
+			AutoFarmCmds.Enable()
+		end)
+		return true
+	end
+	local inInst = AutoRankRuntimeState and type(AutoRankRuntimeState.farmGetInInstanceFlag) == "function"
+		and AutoRankRuntimeState.farmGetInInstanceFlag()
+	if inInst then
+		pcall(function()
+			AutoFarmCmds.Enable()
+		end)
+		return true
+	end
+	local yOff = tonumber(cfg().farmBreakableYOffset) or 5
+	local targetPos = anchor + Vector3.new(0, yOff, 0)
+	local savedCf = pp.CFrame
+	local lv, av = nil, nil
+	pcall(function()
+		lv = pp.AssemblyLinearVelocity
+		av = pp.AssemblyAngularVelocity
+	end)
+	local did = false
+	pcall(function()
+		pp.CFrame = CFrame.new(targetPos)
+		if lv ~= nil then
+			pp.AssemblyLinearVelocity = Vector3.zero
+		end
+		if av ~= nil then
+			pp.AssemblyAngularVelocity = Vector3.zero
+		end
+		AutoFarmCmds.Enable()
+		did = true
+	end)
+	pcall(function()
+		pp.CFrame = savedCf
+		if lv ~= nil then
+			pp.AssemblyLinearVelocity = lv
+		end
+		if av ~= nil then
+			pp.AssemblyAngularVelocity = av
+		end
+	end)
+	traceThrottled("pets_autofarm_enable_snap", 6, "pets", "AutoFarm.Enable snap-anchor maxZone=", maxId, "did=", did)
+	return did
+end
+
 function AR.Pets.tryEnableAutoFarmIfInBox()
 	if not (AutoFarmCmds and type(AutoFarmCmds.Enable) == "function") then
 		return
@@ -9530,7 +9608,7 @@ function AR.Pets.tryEnableAutoFarmIfInBox()
 	if not safeInDottedBox() then
 		return false
 	end
-	pcall(function() AutoFarmCmds.Enable() end)
+	AR.Pets.invokeAutoFarmEnableWithFarmAnchorSnap()
 	AR.Pets.pendingReenable = false
 	traceThrottled("pets_autofarm_enabled", 4, "pets", "AutoFarmCmds.Enable() — петы заякорены")
 	return true
