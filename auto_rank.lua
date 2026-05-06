@@ -2699,6 +2699,11 @@ function ARZone.getNextMainZonePurchaseInfo(opts)
 		return nil
 	end
 	local nextId, nextTbl = ZoneCmds.GetNextZone()
+	local maxOwnId, maxOwnTbl = nil, nil
+	pcall(function()
+		maxOwnId, maxOwnTbl = ZoneCmds.GetMaxOwnedZone()
+	end)
+	log("zone_next_debug", "GetNextZone=", nextId, "nextZN=", nextTbl and nextTbl.ZoneNumber, "maxOwn=", maxOwnId, "maxZN=", maxOwnTbl and maxOwnTbl.ZoneNumber)
 	if not nextId then
 		return nil
 	end
@@ -2761,12 +2766,18 @@ function ARZone.tryAutoBuyMainZone()
 	local bal = info.balance or 0
 	local price = info.price
 	if bal < price then
+		log("zone_purchase_skip_afford", info.id, "price=", price, "bal=", bal)
 		return
 	end
 	Ticks.lastZonePurchaseTick = now
 	local purchaseArg = info.purchaseArg
 	local success, errMsg = AR.Net.invoke("Zones_RequestPurchase", purchaseArg)
 	log("Zones_RequestPurchase", purchaseArg, success, errMsg)
+	local maxOwnAfter, maxOwnAfterTbl = nil, nil
+	pcall(function()
+		maxOwnAfter, maxOwnAfterTbl = ZoneCmds.GetMaxOwnedZone()
+	end)
+	log("zone_purchase_after", "arg=", purchaseArg, "success=", success, "maxOwnNow=", maxOwnAfter, "maxZN=", maxOwnAfterTbl and maxOwnAfterTbl.ZoneNumber)
 end
 
 function ARZone.questObjectiveEnvironmentBlockedDetail()
@@ -2805,6 +2816,9 @@ function ARZone.questObjectiveEnvironmentBlockedDetail()
 		return false, "env_check_pcall_failed"
 	end
 	local why = table.concat(reasons, ",")
+	if blocked then
+		log("env_blocked", "reasons=", why, "IsUsingCannon=", Variables.IsUsingCannon, "IsRebirthing=", Variables.IsRebirthing, "IsTeleportingW2=", Variables.IsTeleportingWorld2, "IsTeleportingW3=", Variables.IsTeleportingWorld3, "IsTeleportingW4=", Variables.IsTeleportingWorld4)
+	end
 	return blocked, (why ~= "" and why) or nil
 end
 
@@ -6741,10 +6755,13 @@ do
 		end
 		if tracked ~= nil then
 			if QuestAssist.shouldSkipObjectiveInteraction(tracked) then
+				log("flag_skip_shouldSkip", tracked._id or tracked._generatorName or "?")
 				return
 			end
 			local blobTracked = QuestAssist.objectiveTextLower(tracked)
-			if not string.find(blobTracked, "flag", 1, true) then
+			local hasFlag = string.find(blobTracked, "flag", 1, true)
+			log("flag_diag_blob", "id=", tracked._id or "?", "hasFlag=", hasFlag and "YES" or "NO", "blob=", string.sub(blobTracked, 1, 200))
+			if not hasFlag then
 				return
 			end
 		elseif cfg().questAutoPlaceFlagWithoutTrackedGoal ~= false then
@@ -6752,13 +6769,16 @@ do
 			return
 		end
 		if not FlexibleFlagCmds or not MapCmds or not InventoryCmds then
+			log("flag_skip_modules", "FlexibleFlagCmds=", FlexibleFlagCmds and "OK" or "MISS", "MapCmds=", MapCmds and "OK" or "MISS", "InventoryCmds=", InventoryCmds and "OK" or "MISS")
 			return
 		end
 		if not safeInDottedBox() then
+			log("flag_skip_not_dotted_box")
 			return
 		end
 		local now = tick()
 		if now - Ticks.lastQuestFlagTick < (cfg().questPlaceFlagInterval or 2) then
+			log("flag_skip_cooldown", "left=", (cfg().questPlaceFlagInterval or 2) - (now - Ticks.lastQuestFlagTick))
 			return
 		end
 
@@ -6800,11 +6820,13 @@ do
 			cont = InventoryCmds.Container and InventoryCmds.Container()
 		end)
 		if not cont or type(cont.CollectAny) ~= "function" then
+			log("flag_skip_no_cont", "cont=", tostring(cont), "CollectAny=", cont and type(cont.CollectAny) or "nil")
 			return
 		end
 
 		local zoneDir = AR.QuestWorldHelpers.getZoneFlagsDirectoryTable()
 		if not zoneDir then
+			log("flag_skip_no_zoneDir")
 			return
 		end
 
@@ -7211,21 +7233,25 @@ AR.ARC = (function()
 	function HatchAssist.pickEggNumberForHatch(tracked)
 		local explicit = AR.QuestWorldHelpers.questSpecifiesEggNumber(tracked)
 		if explicit and explicit > 0 then
+			log("hatch_pick_explicit", explicit)
 			return explicit, true
 		end
+		local mz = nil
+		local mzZN = nil
 		if ZoneCmds and type(ZoneCmds.GetMaxOwnedZone) == "function" then
-			local mz = nil
 			pcall(function()
-				mz = select(1, ZoneCmds.GetMaxOwnedZone())
+				mz, mzZN = ZoneCmds.GetMaxOwnedZone()
 			end)
-			if type(mz) == "string" and mz ~= "" then
-				local zn = HatchAssist.pickHighestEggInPhysicalZone(mz, nil)
-				if zn > 0 then
-					return zn, false
-				end
-				-- zn == 0: no affordable egg in max zone — fall through to global best-egg check below.
-				traceThrottled("hatch_zone_no_afford_fallthrough", 60, "hatch", "no affordable egg in max zone, falling through:", mz)
+		end
+		log("hatch_pick_maxOwn", "id=", mz, "zn=", mzZN and mzZN.ZoneNumber)
+		if type(mz) == "string" and mz ~= "" then
+			local zn = HatchAssist.pickHighestEggInPhysicalZone(mz, nil)
+			if zn > 0 then
+				log("hatch_pick_from_maxOwn", zn, mz)
+				return zn, false
 			end
+			-- zn == 0: no affordable egg in max zone — fall through to global best-egg check below.
+			traceThrottled("hatch_zone_no_afford_fallthrough", 60, "hatch", "no affordable egg in max zone, falling through:", mz)
 		end
 		-- Без активной цели GoalCmds (progress-only): не брать яйцо по спавну/старой зоне — только глобальный pickEggNumber.
 		if cfg().preferZoneEggWhenProgress and MapCmds then
@@ -7255,12 +7281,15 @@ AR.ARC = (function()
 					pushZone(mz)
 				end
 			end
+			log("hatch_pick_zone_progress", "orderedZones=", table.concat(ordered, ","))
 			for _, zoneId in ipairs(ordered) do
 				local zn = HatchAssist.pickHighestEggInPhysicalZone(zoneId, tracked)
 				if zn > 0 then
+					log("hatch_pick_from_zone_progress", zn, zoneId)
 					return zn, false
 				end
 			end
+			log("hatch_pick_zone_progress_none")
 		end
 		-- Final: find the single best accessible egg (highest number, ignoring afford filter).
 		-- If affordable → open it. If not → return 0 (stop and farm, never fall back to cheaper eggs).
@@ -7299,13 +7328,16 @@ AR.ARC = (function()
 		end
 		if globalBest > 0 then
 			local dir = safeEggByNumber(globalBest)
-			if eggPassesAffordFilter(dir, true) then
+			local canAfford = eggPassesAffordFilter(dir, true)
+			log("hatch_pick_global", "best=", globalBest, "id=", globalBestId, "afford=", canAfford)
+			if canAfford then
 				traceThrottled("hatch_global_best_pick", 15, "hatch", "global best egg pick:", globalBest, globalBestId)
 				return globalBest, false
 			end
 			traceThrottled("hatch_global_best_unaffordable", 5, "hatch", "best egg unaffordable, farming instead:", globalBest, globalBestId)
 			return 0, false
 		end
+		log("hatch_pick_global_none")
 		return 0, false
 	end
 
@@ -7385,6 +7417,7 @@ AR.ARC = (function()
 		local pp = ch and ch.PrimaryPart
 		local posRef = hrp or pp
 		if not posRef then
+			log("hatch_near_no_char", eggDir and eggDir._id)
 			return false, "no_character"
 		end
 		local ppos = posRef.Position
@@ -7406,11 +7439,13 @@ AR.ARC = (function()
 				end
 			end
 			if bestMag == math.huge then
+				log("hatch_near_no_inf")
 				return false, "no_infinity_stand"
 			end
 			if bestMag <= maxD then
 				return true
 			end
+			log("hatch_near_too_far_inf", "dist=", bestMag, "maxD=", maxD)
 			return false, "too_far_infinity"
 		end
 
@@ -7431,13 +7466,16 @@ AR.ARC = (function()
 					d = (row._model:GetPivot().Position - ppos).Magnitude
 				end)
 				if type(d) ~= "number" then
+					log("hatch_near_no_custom_cf", eggDir._id)
 					return false, "no_custom_cf"
 				end
 				if d <= maxD then
 					return true
 				end
+				log("hatch_near_too_far_custom", "dist=", d, "maxD=", maxD, eggDir._id)
 				return false, "too_far_custom"
 			end
+			log("hatch_near_no_custom_model", eggDir._id)
 			return false, "no_custom_model"
 		end
 
@@ -7447,6 +7485,7 @@ AR.ARC = (function()
 				part = EggsUtil.GetEggPart(eggDir.eggNumber)
 			end)
 			if not part then
+				log("hatch_near_no_part", "eggNum=", eggDir.eggNumber, "id=", eggDir._id)
 				return false, "no_part"
 			end
 			local mag = nil
@@ -7454,14 +7493,18 @@ AR.ARC = (function()
 				mag = (part.Position - ppos).Magnitude
 			end)
 			if type(mag) ~= "number" then
+				log("hatch_near_bad_part_dist", "eggNum=", eggDir.eggNumber, "id=", eggDir._id)
 				return false, "bad_part_dist"
 			end
 			if mag <= maxD then
+				log("hatch_near_ok", "eggNum=", eggDir.eggNumber, "id=", eggDir._id, "dist=", math.floor(mag))
 				return true
 			end
+			log("hatch_near_too_far_part", "eggNum=", eggDir.eggNumber, "id=", eggDir._id, "dist=", math.floor(mag), "maxD=", maxD)
 			return false, "too_far_part"
 		end
 
+		log("hatch_near_no_eggNumber", eggDir._id)
 		return true
 	end
 
@@ -7740,6 +7783,7 @@ AR.ARC = (function()
 		end
 		error(pickErr)
 	end
+	log("hatch_picked", "n=", n, "fromQuest=", fromQuestText, "progressOnly=", progressOnly, "trackedGen=", tracked and tracked._generatorName or "nil")
 	if n <= 0 then
 		-- Diagnostic: log why no egg number was found
 		pcall(function()
@@ -8023,6 +8067,7 @@ AR.ARC = (function()
 				HatchAssist.pivotForEgg(eggDir, tracked)
 				task.wait(pivotDelay)
 			end
+			log("hatch_setup_start", "egg=", eggDir and eggDir._id, "n=", n, "amt=", hatchAmt, "customUid=", customUid or "nil")
 			if customUid then
 				HatchingCmds.SetupCustomEgg(customUid, eggDir, hatchAmt)
 			else
@@ -8035,6 +8080,7 @@ AR.ARC = (function()
 				task.wait(extraAH)
 			end
 			local hatchOk, hatchWhy = HatchingCmds.AttemptHatch()
+			log("hatch_attempt_result", "ok=", hatchOk, "why=", tostring(hatchWhy), "egg=", eggDir and eggDir._id, "world=", modWorld and modWorld.id)
 			if hatchOk == false then
 				if eggDir and eggDir._id then
 					lastFailedHatchAttemptAt[eggDir._id] = tick()
@@ -8951,9 +8997,11 @@ end
 function AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedObjective, isHatching)
 	local d = {}
 	d.cur = safeCurrentZone()
+	local maxOwnTbl = nil
 	pcall(function()
-		d.maxOwned = select(1, ZoneCmds.GetMaxOwnedZone())
+		d.maxOwned, maxOwnTbl = ZoneCmds.GetMaxOwnedZone()
 	end)
+	d.maxOwnedZN = maxOwnTbl and maxOwnTbl.ZoneNumber
 	local skip = nil
 	local behindMax = d.cur and d.maxOwned and type(d.maxOwned) == "string" and not AR.zonesIdMatch(d.cur, d.maxOwned)
 	local skipRemoteTp = cfg().advancedRemoteFarm and cfg().remoteFarmSkipMaxZoneTeleport
@@ -9026,6 +9074,8 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 		tostring(dt.cur),
 		"maxOwned=",
 		tostring(dt.maxOwned),
+		"maxZN=",
+		tostring(dt.maxOwnedZN),
 		"| teleport:",
 		tostring(dt.skip)
 	)
