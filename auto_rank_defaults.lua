@@ -1,6 +1,6 @@
 return {
 	enabled = true,
-	safeMode = true,
+	safeMode = false,
 	farmNormalBreakables = true,
 	farmBreakableClasses = { "Normal", "Present", "Gift", "MiniChest", "Chest", "Comet" },
 	-- Часть random events (Coin Jar coins и т.д.) регистрируется в BreakableFrontend, но не попадает в типичные классы — добираем по BreakableUID на партях под __THINGS.RandomEvents.
@@ -121,11 +121,11 @@ return {
 	questAutoUnlockEgg = true,
 	questEggUnlockCooldown = 8,
 	questAutoHatch = true,
-	questAutoHatchAnytime = true,
+	questAutoHatchAnytime = false,
 	questHatchAssistInterval = 1.1,
 	hatchClampToAffordableAmount = true,
-	-- Верхняя граница батча (ещё ограничивается EggCmds.GetMaxHatch и safeMode → 3).
-	hatchMaxBatchAllowed = 10,
+	-- Верхняя граница батча (ещё ограничивается EggCmds.GetMaxHatch).
+	hatchMaxBatchAllowed = 99,
 	hatchPreferAffordableEggInZone = true,
 	hatchPreferAffordableEggGlobally = true,
 	allowInfinityEggWithoutQuest = false,
@@ -155,7 +155,7 @@ return {
 	questConsumePotions = true,
 	questConsumePotionsInterval = 1.35,
 	questConsumePotionsOnlyWhenNoneActive = false,
-	questConsumePotionBulk = true,
+	questConsumePotionBulk = false,
 	questConsumePotionsPreferMaxTier = true,
 	questConsumeHonorObjectivePotionTier = true,
 	-- При no_goal брать текст «Use Tier I Potions» из PlayerGui + не блокировать Use из‑за активного баффа того же типа.
@@ -173,6 +173,13 @@ return {
 	questConsumeFruitsPreferMaxTier = true,
 	autoConsumeConsumables = true,
 	autoConsumeConsumablesInterval = 2.2,
+	autoUpgradePotions = true,
+	autoUpgradeEnchants = true,
+	autoUpgradeItemsInterval = 8,
+	autoUpgradeItemsMinTier = 1,
+	autoUpgradeItemsMaxTier = 12,
+	autoUpgradeItemsMinReserve = 1,
+	autoUpgradeItemsMaxEntriesPerPulse = 12,
 	autoConsumeConsumableBlocklist = {
 		"Mining Bomb",
 		"Mining TNT",

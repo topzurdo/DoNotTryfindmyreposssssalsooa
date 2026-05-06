@@ -84,29 +84,7 @@ for k, v in pairs(INTERNAL_DEFAULTS) do
 		G.AutoRank[k] = v
 	end
 end
-if G.AutoRank.safeMode ~= false then
-	G.AutoRank.netRateLimitPerSec = math.min(tonumber(G.AutoRank.netRateLimitPerSec) or 18, 18)
-	G.AutoRank.delayDamage = math.max(tonumber(G.AutoRank.delayDamage) or 0.16, 0.16)
-	G.AutoRank.farmMultiHitCount = 1
-	G.AutoRank.farmSignalNearbyEnabled = false
-	G.AutoRank.autoDaycareInterval = math.max(tonumber(G.AutoRank.autoDaycareInterval) or 20, 20)
-	G.AutoRank.autoDaycareMaxClaimsPerTick = 1
-	G.AutoRank.eggSlotMaxPurchasesPerPulse = math.min(tonumber(G.AutoRank.eggSlotMaxPurchasesPerPulse) or 3, 1)
-	G.AutoRank.equipSlotMaxPurchasesPerPulse = math.min(tonumber(G.AutoRank.equipSlotMaxPurchasesPerPulse) or 3, 1)
-	G.AutoRank.consumablesTickInterval = math.max(0.75, math.min(tonumber(G.AutoRank.consumablesTickInterval) or 2, 2))
-	G.AutoRank.consumeFailureCooldown = math.max(4, math.min(tonumber(G.AutoRank.consumeFailureCooldown) or 8, 8))
-	G.AutoRank.freeGiftsCheckInterval = math.max(1, math.min(tonumber(G.AutoRank.freeGiftsCheckInterval) or 2, 2))
-	G.AutoRank.hbIntervalFreeRewards = math.max(1, math.min(tonumber(G.AutoRank.hbIntervalFreeRewards) or 2, 2))
-	G.AutoRank.hbIntervalConsumables = math.max(0.75, math.min(tonumber(G.AutoRank.hbIntervalConsumables) or 2, 2))
-	G.AutoRank.consumeDebugLog = false
-	G.AutoRank.eggOpeningPromptClickInterval = math.max(tonumber(G.AutoRank.eggOpeningPromptClickInterval) or 0.65, 0.65)
-	G.AutoRank.eggOpeningPostInvokeBurstCount = math.min(tonumber(G.AutoRank.eggOpeningPostInvokeBurstCount) or 1, 2)
-	G.AutoRank.autoPickStarterPetsInterval = math.max(tonumber(G.AutoRank.autoPickStarterPetsInterval) or 1.5, 1.5)
-	G.AutoRank.petsAlwaysFarmTickInterval = math.max(tonumber(G.AutoRank.petsAlwaysFarmTickInterval) or 8, 8)
-	G.AutoRank.autoFarmEnableInterval = math.max(tonumber(G.AutoRank.autoFarmEnableInterval) or 15, 15)
-	G.AutoRank.consumeTrustServerInventory = false
-	G.AutoRank.hatchMaxBatchAllowed = math.min(tonumber(G.AutoRank.hatchMaxBatchAllowed) or 10, 3)
-end
+G.AutoRank.safeMode = false
 
 -- Одноразовые миграции старых getgenv().AutoRank
 do
@@ -995,6 +973,7 @@ Ticks.progressHatchProximityBackoffUntil = 0
 Ticks.lastPotionConsumeTick = 0
 Ticks.lastFruitConsumeTick = 0
 Ticks.lastConsumableConsumeTick = 0
+Ticks.lastUpgradeItemsTick = 0
 Ticks.lastFarmExplosiveTick = 0
 local farmExplosiveInvokeBusy = false
 Ticks.lastQuestGuiClickTick = 0
@@ -1049,6 +1028,7 @@ local function rankGuiSynthProtectionAllowsStay(instanceId)
 end
 
 local lastEggUnlockAt = {}
+local lastFailedHatchAttemptAt = {}
 local machinePurchaseRetryAfter = {
 	EggSlots = 0,
 	EquipSlots = 0,
@@ -3604,6 +3584,42 @@ function QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
 	return blob
 end
 
+function QuestAssist.rankGoalsGuiBlobLower()
+	local b = QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
+	if type(b) ~= "string" then
+		return ""
+	end
+	return string.lower(b)
+end
+
+function QuestAssist.guiHasUrgentNonEggRankGoal()
+	local b = QuestAssist.rankGoalsGuiBlobLower()
+	if b == "" then
+		return false
+	end
+	local function incomplete(total)
+		return not string.find(b, tostring(total) .. "%s*/%s*" .. tostring(total))
+	end
+	if string.find(b, "flag", 1, true) and incomplete(3) then
+		return true
+	end
+	if string.find(b, "potion", 1, true) and (incomplete(5) and incomplete(8) and incomplete(9)) then
+		return true
+	end
+	if string.find(b, "coin jar", 1, true) and incomplete(3) then
+		return true
+	end
+	if string.find(b, "break", 1, true) and string.find(b, "breakable", 1, true) and not string.match(b, "500%s*/%s*500") then
+		return true
+	end
+	return false
+end
+
+function QuestAssist.guiMentionsEggRankGoal()
+	local b = QuestAssist.rankGoalsGuiBlobLower()
+	return string.find(b, "hatch", 1, true) ~= nil or string.find(b, "egg", 1, true) ~= nil
+end
+
 --[[ Текст ранговой цели по звёздам: в Directory.Rewards ключ = 1..N, в UI заголовок = QuestCmds.MakeTitle(Save.Goals[*].Stars == slot). ]]
 function QuestAssist.resolveRankStarObjectiveTitle(save, ranksDir, rewardSlot)
 	local slotN = tonumber(rewardSlot)
@@ -5746,6 +5762,25 @@ function ARQ.potionTypeAlreadyActive(potionId)
 	return type(sub) == "table" and next(sub) ~= nil
 end
 
+function ARQ.activePotionMaxTier(potionId)
+	if type(potionId) ~= "string" or not PotionCmds or not PotionCmds.GetActivePotions then
+		return 0
+	end
+	local t = PotionCmds.GetActivePotions()
+	local sub = t and t[potionId]
+	if type(sub) ~= "table" then
+		return 0
+	end
+	local best = 0
+	for k, v in pairs(sub) do
+		local tn = tonumber(k) or tonumber(v and (v.Tier or v.tier or v.tn)) or 0
+		if tn > best then
+			best = tn
+		end
+	end
+	return best
+end
+
 function ARQ.pickPotionConsumeAmount(item)
 	local am = 1
 	pcall(function()
@@ -5904,8 +5939,9 @@ function AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, require
 	if type(uid) ~= "string" or type(pid) ~= "string" then
 		return nil
 	end
+	local activeTier = ARQ.activePotionMaxTier(pid)
 	local bypassActiveBuff = type(requiredTier) == "number" and cfg().questConsumeBypassActiveBuffForTierForced ~= false
-	if not bypassActiveBuff and ARQ.potionTypeAlreadyActive(pid) then
+	if not bypassActiveBuff and activeTier > 0 then
 		return nil
 	end
 	local item = cont:Get(uid, PotionItem)
@@ -5920,10 +5956,13 @@ function AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, require
 	if type(requiredTier) == "number" and requiredTier >= 1 and tier ~= requiredTier then
 		return nil
 	end
+	if activeTier > 0 and tier <= activeTier then
+		return nil
+	end
 	if not AR.Cons.canUsePotionTier(tier) then
 		return nil
 	end
-	local n = ARQ.pickPotionConsumeAmount(item)
+	local n = 1
 	if n < 1 then
 		return nil
 	end
@@ -6330,6 +6369,87 @@ function AR.Cons.tryAutoConsumeConsumablesLegacy()
 	end
 end
 
+function AR.Cons.rawInventoryAmount(data)
+	if type(data) ~= "table" then
+		return 0
+	end
+	return tonumber(data._am or data.amt or data.amount or data.n or data.Amount or data.qty) or 1
+end
+
+function AR.Cons.upgradeItemsBulk(kind, inventory, requiredFn, remoteName, skipUidSet)
+	if type(inventory) ~= "table" or type(requiredFn) ~= "function" or not (AR and AR.Net and type(AR.Net.invoke) == "function") then
+		return false
+	end
+	local minTier = math.max(1, math.floor(tonumber(cfg().autoUpgradeItemsMinTier) or 1))
+	local maxTier = math.max(minTier, math.floor(tonumber(cfg().autoUpgradeItemsMaxTier) or 12))
+	local reserve = math.max(0, math.floor(tonumber(cfg().autoUpgradeItemsMinReserve) or 1))
+	local maxEntries = math.max(1, math.floor(tonumber(cfg().autoUpgradeItemsMaxEntriesPerPulse) or 12))
+	local payload = {}
+	local entries = 0
+	for uid, data in pairs(inventory) do
+		if entries >= maxEntries then
+			break
+		end
+		if type(uid) == "string" and type(data) == "table" and not (skipUidSet and skipUidSet[uid]) then
+			local tier = tonumber(data.tn or data.tier or data.Tier) or 1
+			if tier >= minTier and tier < maxTier then
+				local amount = AR.Cons.rawInventoryAmount(data)
+				local req = 0
+				pcall(function()
+					req = requiredFn(tier) or 0
+				end)
+				if req > 0 and amount > reserve then
+					local craft = math.floor((amount - reserve) / req)
+					if craft > 0 then
+						payload[uid] = craft
+						entries += 1
+					end
+				end
+			end
+		end
+	end
+	if next(payload) == nil then
+		return false
+	end
+	local ok, res, err = pcall(AR.Net.invoke, remoteName, payload)
+	log("UpgradeItems", kind, remoteName, ok, res, err)
+	return ok and res ~= false
+end
+
+function AR.Cons.tryAutoUpgradeItems()
+	if (cfg().autoUpgradePotions ~= true and cfg().autoUpgradeEnchants ~= true) or not Save or not Balancing then
+		return
+	end
+	local now = tick()
+	if now - Ticks.lastUpgradeItemsTick < (tonumber(cfg().autoUpgradeItemsInterval) or 8) then
+		return
+	end
+	local s = Save.Get()
+	if not s or type(s.Inventory) ~= "table" then
+		return
+	end
+	local did = false
+	if cfg().autoUpgradePotions == true and type(s.Inventory.Potion) == "table" and type(Balancing.CalcPotionsPerTierRequired) == "function" then
+		did = AR.Cons.upgradeItemsBulk("Potions", s.Inventory.Potion, Balancing.CalcPotionsPerTierRequired, "UpgradePotionsMachine_ActivateBulk") or did
+	end
+	if cfg().autoUpgradeEnchants == true and type(s.Inventory.Enchant) == "table" and type(Balancing.CalcEnchantsPerTierRequired) == "function" then
+		local equipped = {}
+		if type(s.EquippedEnchants) == "table" then
+			for _, uid in pairs(s.EquippedEnchants) do
+				if type(uid) == "string" then
+					equipped[uid] = true
+				end
+			end
+		end
+		did = AR.Cons.upgradeItemsBulk("Enchants", s.Inventory.Enchant, Balancing.CalcEnchantsPerTierRequired, "UpgradeEnchantsMachine_ActivateBulk", equipped) or did
+	end
+	if did then
+		Ticks.lastUpgradeItemsTick = now
+	else
+		Ticks.lastUpgradeItemsTick = now - math.max(1, (tonumber(cfg().autoUpgradeItemsInterval) or 8) * 0.5)
+	end
+end
+
 function AR.Cons.tryAutoBuffConsumablesPulseLegacy()
 	pcall(function()
 		ARG.refreshTrackedObjective()
@@ -6346,6 +6466,7 @@ function AR.Cons.tryAutoBuffConsumablesPulseLegacy()
 		end
 		AR.Cons.tryQuestConsumeFruitLegacy()
 		AR.Cons.tryAutoConsumeConsumablesLegacy()
+		AR.Cons.tryAutoUpgradeItems()
 	end)
 end
 
@@ -6910,10 +7031,7 @@ AR.ARC = (function()
 	end
 
 	local function hatchBatchUpperBound()
-		local cap = math.clamp(math.floor(tonumber(cfg().hatchMaxBatchAllowed) or 10), 1, 12)
-		if cfg().safeMode ~= false then
-			cap = math.min(cap, 3)
-		end
+		local cap = math.clamp(math.floor(tonumber(cfg().hatchMaxBatchAllowed) or 99), 1, 99)
 		return cap
 	end
 
@@ -7538,11 +7656,22 @@ AR.ARC = (function()
 		hatchSkipDiag("modules_missing")
 		return
 	end
+	local gen = (tracked and tracked._generatorName) or ""
+	if QuestAssist.guiHasUrgentNonEggRankGoal() then
+		if progressOnly then
+			hatchSkipDiag("gui_non_egg_goal_blocks_progress")
+			return
+		end
+		local blobGate = string.lower(QuestAssist.flattenObjectiveText(tracked))
+		if not string.find(blobGate, "hatch", 1, true) and not string.find(blobGate, "egg", 1, true) then
+			hatchSkipDiag("gui_non_egg_goal_blocks_hatch", gen)
+			return
+		end
+	end
 	if hatchSequenceBlocksWorldTeleport() then
 		hatchSkipDiag("hatch_busy")
 		return
 	end
-	local gen = (tracked and tracked._generatorName) or ""
 	if not cfg().questAutoHatchAnytime and not progressOnly then
 		local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
 		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
@@ -7597,8 +7726,13 @@ AR.ARC = (function()
 		hatchSkipDiag("egg_dir_missing", n)
 		return
 	end
+	local failCd = tonumber(cfg().hatchAttemptFailCooldownSec) or 25
+	if failCd > 0 and now - (lastFailedHatchAttemptAt[eggDir._id] or 0) < failCd then
+		hatchSkipDiag("recent_attempt_fail", eggDir._id)
+		return
+	end
 
-	if cfg().questEggTeleportIfWrongZone and (fromQuestText or progressOnly) and MapCmds and Network and TeleportMapCmds then
+	if cfg().questEggTeleportIfWrongZone and fromQuestText and not progressOnly and MapCmds and Network and TeleportMapCmds then
 		local cur = safeCurrentZone()
 		local eggZ = AR.QuestWorldHelpers.getEggZoneIdForNumber(n)
 		if eggZ and cur and not eggZoneIdsEqual(eggZ, cur) then
@@ -7727,7 +7861,7 @@ AR.ARC = (function()
 							allow = false
 						end
 					end
-					if allow and cfg().questEggTeleportIfWrongZone and MapCmds and Network and TeleportMapCmds then
+					if allow and not progressOnly and cfg().questEggTeleportIfWrongZone and MapCmds and Network and TeleportMapCmds then
 						local cur = safeCurrentZone()
 						local eggZ = AR.QuestWorldHelpers.getEggZoneIdForNumber(cand)
 						if eggZ and cur and not eggZoneIdsEqual(eggZ, cur) then
@@ -7868,6 +8002,9 @@ AR.ARC = (function()
 			end
 			local hatchOk, hatchWhy = HatchingCmds.AttemptHatch()
 			if hatchOk == false then
+				if eggDir and eggDir._id then
+					lastFailedHatchAttemptAt[eggDir._id] = tick()
+				end
 				traceThrottled(
 					"hatch_attempt_failed",
 					12,
@@ -8249,12 +8386,6 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		pcall(function()
 			ARQ.tryTravelToTechStuckRetry(tracked)
 		end)
-		local hhOk, hhErr = pcall(function()
-			isHatching = AR.ARC.tryQuestEggHatchAssist(tracked) == true or hatchAsyncPipelineActive()
-		end)
-		if not hhOk then
-			warnErr("tryQuestEggHatchAssist", hhErr)
-		end
 	end
 	local pfOk, pfErr = pcall(function()
 		AR.QuestWorldHelpers.tryQuestPlaceFlexibleFlag(tracked)
@@ -8262,8 +8393,16 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 	if not pfOk then
 		warnErr("tryQuestPlaceFlexibleFlag", pfErr)
 	end
+	if tracked then
+		local hhOk, hhErr = pcall(function()
+			isHatching = AR.ARC.tryQuestEggHatchAssist(tracked) == true or hatchAsyncPipelineActive()
+		end)
+		if not hhOk then
+			warnErr("tryQuestEggHatchAssist", hhErr)
+		end
+	end
 	local dqEnd = AutoRankRuntimeState.diagQuest
-	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchAsyncPipelineActive() then
+	if cfg().autoHatchProgressWithoutQuest and cfg().questAutoHatch and not hatchAsyncPipelineActive() and not QuestAssist.guiHasUrgentNonEggRankGoal() then
 		local eggRelated = tracked and QuestAssist.objectiveMentionsEggOrHatch(tracked)
 		local allowNonEggProgress = tracked
 			and cfg().autoHatchProgressWhenNonEggQuest ~= false
@@ -9593,6 +9732,7 @@ function AR.Cons.tryConsumePotion(name, potionId, reserve)
 		return false
 	end
 	local candidates = {}
+	local activeTier = math.max(ARQ.activePotionMaxTier(potionId), ARQ.activePotionMaxTier(potionId .. " Potion"))
 	for uid, data in pairs(s.Inventory.Potion) do
 		if type(uid) == "string" and type(data) == "table" then
 			local idMatch = data.id == potionId or data.id == potionId .. " Potion"
@@ -9604,7 +9744,7 @@ function AR.Cons.tryConsumePotion(name, potionId, reserve)
 						tierOk = select(1, MasteryCmds.CanUsePotion(tier)) == true
 					end)
 				end
-				if tierOk then
+				if tierOk and (activeTier <= 0 or tier > activeTier) then
 					table.insert(candidates, { uid = uid, tier = tier })
 				end
 			end
@@ -9920,6 +10060,7 @@ AR.HB.tasks = {
 	{ tag = "freeGifts", interval = "hbIntervalFreeRewards", fn = function() AR.Reward.tick() end },
 	{ tag = "lootbox", interval = "hbIntervalLootbox", fn = function() AR.Lootbox.tick() end },
 	{ tag = "cons", interval = "hbIntervalConsumables", fn = function() AR.Cons.tick() end },
+	{ tag = "upgradeItems", interval = "autoUpgradeItemsInterval", fn = function() AR.Cons.tryAutoUpgradeItems() end },
 	{ tag = "miscGiftBags", interval = "autoOpenMiscGiftBagsInterval", fn = function()
 		pcall(ARQ.tryAutoOpenMiscGiftBags)
 	end },
