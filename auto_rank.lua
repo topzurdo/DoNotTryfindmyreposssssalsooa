@@ -6733,7 +6733,9 @@ do
 				return
 			end
 			local blobTracked = QuestAssist.objectiveTextLower(tracked)
-			if not string.find(blobTracked, "flag", 1, true) then
+			local guiBlob = QuestAssist.rankGoalsGuiBlobLower()
+			local hasFlag = string.find(blobTracked, "flag", 1, true) or (guiBlob ~= "" and string.find(guiBlob, "flag", 1, true))
+			if not hasFlag then
 				return
 			end
 		elseif cfg().questAutoPlaceFlagWithoutTrackedGoal ~= false then
@@ -6754,6 +6756,10 @@ do
 		local blobHint = ""
 		if tracked ~= nil then
 			blobHint = QuestAssist.objectiveTextLower(tracked)
+		end
+		local guiBlob = QuestAssist.rankGoalsGuiBlobLower()
+		if guiBlob ~= "" then
+			blobHint = blobHint .. " " .. guiBlob
 		end
 
 		local function orderedFlagNames()
@@ -7650,7 +7656,8 @@ AR.ARC = (function()
 			return
 		end
 		local blobGate = string.lower(QuestAssist.flattenObjectiveText(tracked))
-		if not string.find(blobGate, "hatch", 1, true) and not string.find(blobGate, "egg", 1, true) then
+		local trackedHasEgg = string.find(blobGate, "hatch", 1, true) or string.find(blobGate, "egg", 1, true)
+		if not trackedHasEgg and not QuestAssist.guiMentionsEggRankGoal() then
 			hatchSkipDiag("gui_non_egg_goal_blocks_hatch", gen)
 			return
 		end
@@ -7661,7 +7668,8 @@ AR.ARC = (function()
 	end
 	if not cfg().questAutoHatchAnytime and not progressOnly then
 		local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
-		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
+		local trackedHasEgg = string.find(blob, "hatch", 1, true) or string.find(blob, "egg", 1, true)
+		if not trackedHasEgg and not QuestAssist.guiMentionsEggRankGoal() then
 			hatchSkipDiag("objective_not_egg_hatch", gen)
 			return
 		end
