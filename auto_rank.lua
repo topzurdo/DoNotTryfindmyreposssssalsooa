@@ -1172,6 +1172,9 @@ local function forceClearHatchBusyPipeline(reason, progressOnlyFlag, detail)
 end
 
 local function hatchSequenceBlocksWorldTeleport()
+	if Ticks.hatchEggPipelineInFlight == true then
+		return true
+	end
 	if hatchAsyncPipelineActive() then
 		return true
 	end
@@ -9356,6 +9359,9 @@ function AutoRankRuntimeState.tryAutoEnableAutoFarm()
 	if not AutoFarmCmds or type(AutoFarmCmds.Enable) ~= "function" then
 		return
 	end
+	if hatchSequenceBlocksWorldTeleport() then
+		return
+	end
 	if not AR.Pets.autoFarmEnableGateOk() then
 		return
 	end
@@ -9857,6 +9863,9 @@ end
 
 function AR.Pets.tick()
 	if cfg().petsAlwaysFarmEnabled ~= true then
+		return
+	end
+	if hatchSequenceBlocksWorldTeleport() then
 		return
 	end
 	if not AutoFarmCmds or type(AutoFarmCmds.Enable) ~= "function" then
