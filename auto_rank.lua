@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 22
+local AUTO_RANK_RUNTIME_VERSION = 23
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -7038,7 +7038,8 @@ end
 AR.QuestWorldHelpers = AR.QuestWorldHelpers or {}
 do
 	-- PS99 egg stands / props use names like "Center", "Pad"; Directory.Zones.__index errors on unknown keys.
-	local ZONE_FALSE_POSITIVE_NAMES = {
+	-- Таблица на AR.*, не local — главный chunk уже упирается в лимит ~200 локалей Luau.
+	AR.QuestWorldHelpers._zoneFalsePositiveNames = {
 		Center = true,
 		Pad = true,
 		Capsule = true,
@@ -7060,8 +7061,9 @@ do
 		Main = true,
 	}
 
-	local function zoneNameLooksLikeAuxiliaryPart(name)
-		return type(name) == "string" and ZONE_FALSE_POSITIVE_NAMES[name] == true
+	function AR.QuestWorldHelpers.zoneNameLooksLikeAuxiliaryPart(name)
+		local t = AR.QuestWorldHelpers._zoneFalsePositiveNames
+		return type(name) == "string" and type(t) == "table" and t[name] == true
 	end
 
 	function AR.QuestWorldHelpers.getZoneFlagsDirectoryTable()
@@ -7108,7 +7110,7 @@ do
 			end
 			return nil
 		end
-		if zoneNameLooksLikeAuxiliaryPart(z) then
+		if AR.QuestWorldHelpers.zoneNameLooksLikeAuxiliaryPart(z) then
 			return nil
 		end
 		return z
@@ -7133,7 +7135,7 @@ do
 					return z
 				end
 			end
-			if not zoneNameLooksLikeAuxiliaryPart(at.Name) then
+			if not AR.QuestWorldHelpers.zoneNameLooksLikeAuxiliaryPart(at.Name) then
 				local byName = AR.QuestWorldHelpers.normalizeZoneIdCandidate(at.Name)
 				if byName then
 					return byName
