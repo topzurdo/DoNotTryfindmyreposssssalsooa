@@ -7222,12 +7222,32 @@ AR.ARC = (function()
 				if zn > 0 then
 					return zn, false
 				end
-				-- Если hatchOnlyMaxOwnedZone включен, попробовать глобальный pickEggNumber
-				-- (зона может не иметь яиц физически, но яйца доступны)
-				if cfg().hatchOnlyMaxOwnedZone then
-					traceThrottled("hatch_zone_no_egg_fallthrough", 60, "hatch", "hatchOnlyMaxOwnedZone: no egg in zone, falling through to global pick")
+				-- zn == 0: either no egg physically in zone, or egg exists but unaffordable.
+				-- If the zone has any egg at all (ignoring afford), then we're out of money — stop hatching.
+				local zoneHasEgg = false
+				if EggsUtil and EggCmds then
+					local hi2 = 0
+					pcall(function() hi2 = EggCmds.GetHighestEggNumberAvailable() or 0 end)
+					if hi2 <= 0 then pcall(function() hi2 = EggsUtil.GetMaximumEggNumber() or 0 end) end
+					local allowInf = HatchAssist.infinityAllowed(tracked)
+					for i = hi2, 1, -1 do
+						local dir = safeEggByNumber(i)
+						if dir and dir._id and not (dir._id == "Infinity Egg" and not allowInf) then
+							local ez = AR.QuestWorldHelpers.getEggZoneIdForNumber(i)
+							if ez and eggZoneIdsEqual(ez, mz) then
+								zoneHasEgg = true
+								break
+							end
+						end
+					end
 				end
-				-- Max-owned zone had no affordable egg: fall through to zone scan / global pick instead of hard 0.
+				if zoneHasEgg then
+					-- Zone egg exists but we can't afford it — stop and farm.
+					traceThrottled("hatch_zone_unaffordable", 15, "hatch", "best zone egg unaffordable, stopping to farm:", mz)
+					return 0, false
+				end
+				-- No physical egg in this zone: fall through to global pick.
+				traceThrottled("hatch_zone_no_egg_fallthrough", 60, "hatch", "no egg in max zone, falling through to global pick:", mz)
 			end
 		end
 		-- Без активной цели GoalCmds (progress-only): не брать яйцо по спавну/старой зоне — только глобальный pickEggNumber.
