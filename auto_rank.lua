@@ -1044,6 +1044,7 @@ Ticks.lastRebirthDismissTick = 0
 Ticks.lastRankUpDismissTick = 0
 Ticks.lastMasteryPerkDismissTick = 0
 Ticks.lastAutoFarmEnableTick = 0
+Ticks.lastPetFarmAnchorSnapTick = 0
 local autoFarmEnabledZone = nil
 Ticks.lastQuestFlagTick = 0
 Ticks.lastQuestSpawnInventoryBreakTick = 0
@@ -9143,23 +9144,41 @@ function AutoRankRuntimeState.tryAutoEnableAutoFarm()
 	if not AutoFarmCmds or type(AutoFarmCmds.Enable) ~= "function" then
 		return
 	end
-	if not safeInDottedBox() then
+	if not AR.Pets.autoFarmEnableGateOk() then
 		return
 	end
 	local curZone = safeCurrentZone()
 	local now = tick()
 	local interval = cfg().autoFarmEnableInterval or 9
 	local zoneChanged = cfg().autoFarmReenableOnZoneChange and curZone ~= autoFarmEnabledZone
-	if not zoneChanged and now - Ticks.lastAutoFarmEnableTick < interval then
-		return
-	end
-	Ticks.lastAutoFarmEnableTick = now
-	pcall(function()
-		if AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() and not zoneChanged then
+	local hatchSnapFastPath = hatchAsyncPipelineActive()
+		and cfg().petsAutoFarmEnableSnapPrimaryToFarmCenter ~= false
+	if not hatchSnapFastPath then
+		if not zoneChanged and now - Ticks.lastAutoFarmEnableTick < interval then
 			return
 		end
+		Ticks.lastAutoFarmEnableTick = now
+	end
+	pcall(function()
+		local enf = AutoFarmCmds.IsEnabled and AutoFarmCmds.IsEnabled() == true
+		local periodic = hatchAsyncPipelineActive()
+			and cfg().petsAutoFarmEnableSnapPrimaryToFarmCenter ~= false
+			and cfg().petsAutoFarmReanchorWhileHatching ~= false
+		local iv = tonumber(cfg().petsAutoFarmReanchorIntervalSec) or 6
+		if enf and not zoneChanged then
+			if not periodic then
+				return
+			end
+			if tick() - (Ticks.lastPetFarmAnchorSnapTick or 0) < iv then
+				return
+			end
+		end
+		Ticks.lastPetFarmAnchorSnapTick = tick()
 		AR.Pets.invokeAutoFarmEnableWithFarmAnchorSnap()
 		autoFarmEnabledZone = curZone
+		if hatchSnapFastPath then
+			Ticks.lastAutoFarmEnableTick = tick()
+		end
 		log("AutoFarm_Enable fired zone=", tostring(curZone))
 	end)
 end
@@ -9522,6 +9541,16 @@ function AR.Pets.installForceDisableListener()
 	AR.Pets.forceDisableListenerInstalled = true
 end
 
+function AR.Pets.autoFarmEnableGateOk()
+	if cfg().petsAutoFarmRequireDottedBoxForEnable == true then
+		return safeInDottedBox()
+	end
+	if cfg().petsAutoFarmEnableSnapPrimaryToFarmCenter == false then
+		return safeInDottedBox()
+	end
+	return true
+end
+
 function AR.Pets.requestPivotToFarm()
 	if AutoRankRuntimeState and type(AutoRankRuntimeState.tryPivotToBreakableFarmCenter) == "function" then
 		pcall(AutoRankRuntimeState.tryPivotToBreakableFarmCenter, false)
@@ -9605,7 +9634,7 @@ function AR.Pets.tryEnableAutoFarmIfInBox()
 	if not (AutoFarmCmds and type(AutoFarmCmds.Enable) == "function") then
 		return
 	end
-	if not safeInDottedBox() then
+	if not AR.Pets.autoFarmEnableGateOk() then
 		return false
 	end
 	AR.Pets.invokeAutoFarmEnableWithFarmAnchorSnap()
@@ -9644,6 +9673,20 @@ function AR.Pets.tick()
 		pcall(function() curParentId = AutoFarmCmds.GetTargetParentId() end)
 	end
 	if enabled and curParentId == maxOwnedId and not AR.Pets.pendingReenable then
+		local periodic = hatchAsyncPipelineActive()
+			and cfg().petsAutoFarmEnableSnapPrimaryToFarmCenter ~= false
+			and cfg().petsAutoFarmReanchorWhileHatching ~= false
+		if not periodic then
+			return
+		end
+		local iv = tonumber(cfg().petsAutoFarmReanchorIntervalSec) or 6
+		if tick() - (Ticks.lastPetFarmAnchorSnapTick or 0) < iv then
+			return
+		end
+		Ticks.lastPetFarmAnchorSnapTick = tick()
+		AR.Pets.requestPivotToFarm()
+		AR.Pets.invokeAutoFarmEnableWithFarmAnchorSnap()
+		traceThrottled("pets_autofarm_reanchor_hatching", 5, "pets", "snap+Enable reanchor during hatchBusy")
 		return
 	end
 	AR.Pets.requestPivotToFarm()
@@ -9658,7 +9701,7 @@ function AR.Pets.tick()
 		local deadline = tick() + 1.5
 		while tick() < deadline do
 			task.wait(0.1)
-			if safeInDottedBox() then
+			if AR.Pets.autoFarmEnableGateOk() then
 				AR.Pets.tryEnableAutoFarmIfInBox()
 				break
 			end

@@ -582,6 +582,11 @@ return {
 	petsAlwaysFarmListenForceDisable = true,
 	-- При Enable() клиент записывает GetStartingPosition = позиция HRP В ЭТОТ МОМЕНТ — после Hatch ForceDisable включение автофермы у яйца залипает якорь на игроке, петы остаются с тобой. Snap: один кадр ставим HRP в центр BREAKABLE_SPAWNS max-owned зоны и сразу откатываем CFrame/velocity.
 	petsAutoFarmEnableSnapPrimaryToFarmCenter = true,
+	-- У яиц Tech World ты часто вне dotted box — ванильный AutoFarm_Enable тогда вообще не вызывался (tryAutoEnable + pets.tick).
+	petsAutoFarmRequireDottedBoxForEnable = false,
+	-- Пока активен hatch guard: периодически повторять snap+Enable иначе IsEnabled уже true но якорь остался «у яйца».
+	petsAutoFarmReanchorWhileHatching = true,
+	petsAutoFarmReanchorIntervalSec = 5,
 
 	hbSchedulerEnabled = true,
 	hbIntervalDealDamage = 0,
