@@ -154,6 +154,15 @@ return {
 	--[[ Enchant loadout при ранк-цели collect/misc/ключи: «Treasure Hunter» вперёд локальной копией списка. ]]
 	rankStarLootGoalsBoostTreasureHunter = true,
 	rankStarTreasureHunterEnchantName = "Treasure Hunter",
+	--[[ Доп. префикс enchant по Goals (7,99 CURRENCY / 63 GET_CRITICAL / DIAMOND_BREAKABLE / break). ]]
+	rankStarGoalEnchantBoost = true,
+	--[[ Ускорить клейм rank rewards / free gifts / лутбоксы, пока активен синтез RankStars. ]]
+	rankStarClaimRewardsAggressive = true,
+	rankStarClaimIntervalWhenRankStar = 0.2,
+	rankStarFreeGiftsAggressive = true,
+	rankStarFreeGiftsCheckIntervalWhenRankStar = 1,
+	rankStarLootboxAggressive = true,
+	rankStarLootboxOpenIntervalWhenRankStar = 0.72,
 	-- Не опрашивать GoalCmds: только ранговые звёздные квесты (синтез выше) + общий фарм/вылуп/клейм наград.
 	questOnlyRankStarObjectives = true,
 	questTeleportToTarget = true,

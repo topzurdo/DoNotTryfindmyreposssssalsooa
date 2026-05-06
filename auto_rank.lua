@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 20
+local AUTO_RANK_RUNTIME_VERSION = 22
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -305,6 +305,24 @@ do
 			G.AutoRank.rankStarLootGoalsBoostTreasureHunter = true
 		end
 		G.AutoRank._arRankStarKeysV1 = 1
+	end
+end
+do
+	local v = G.AutoRank._arRankStarProgAggroV23 or 0
+	if v < 1 then
+		if G.AutoRank.rankStarGoalEnchantBoost == nil then
+			G.AutoRank.rankStarGoalEnchantBoost = true
+		end
+		if G.AutoRank.rankStarFreeGiftsAggressive == nil then
+			G.AutoRank.rankStarFreeGiftsAggressive = true
+		end
+		if G.AutoRank.rankStarLootboxAggressive == nil then
+			G.AutoRank.rankStarLootboxAggressive = true
+		end
+		if G.AutoRank.rankStarClaimRewardsAggressive == nil then
+			G.AutoRank.rankStarClaimRewardsAggressive = true
+		end
+		G.AutoRank._arRankStarProgAggroV23 = 1
 	end
 end
 
@@ -644,6 +662,32 @@ local function safeIsInInstance(instanceId)
 	end
 	local ok, res = pcall(InstancingCmds.IsInInstance, instanceId)
 	return ok and res == true, ok
+end
+
+--[[ FFlags.Keys[name]: true только при Get(...) == true или CanBypass(); нет FFlags/ключа → false (блок, как в RankStar machine/chest). ]]
+local function safeFflagKeyOnOrBypass(name)
+	if type(name) ~= "string" or name == "" then
+		return false
+	end
+	if not FFlags or type(FFlags.Get) ~= "function" or type(FFlags.Keys) ~= "table" then
+		return false
+	end
+	local k = FFlags.Keys[name]
+	if k == nil then
+		return false
+	end
+	local on = false
+	pcall(function()
+		on = FFlags.Get(k) == true
+	end)
+	if on then
+		return true
+	end
+	local bypass = false
+	pcall(function()
+		bypass = type(FFlags.CanBypass) == "function" and FFlags.CanBypass() == true
+	end)
+	return bypass == true
 end
 
 local function safeCurrentZone()
@@ -4073,6 +4117,41 @@ function QuestAssist.decorateRankStarSynthTracked(tracked, save, rewardSlot)
 	else
 		tracked._rankStarTreasureHunterLootGoals = false
 	end
+
+	local incSet = {}
+	for _, ti in ipairs(incTypes) do
+		incSet[ti] = true
+	end
+	local boostOrd = {}
+	local function pbEnchantBoost(n)
+		if type(n) ~= "string" or n == "" then
+			return
+		end
+		for _, x in ipairs(boostOrd) do
+			if x == n then
+				return
+			end
+		end
+		boostOrd[#boostOrd + 1] = n
+	end
+	if incSet[63] then
+		pbEnchantBoost("Criticals")
+		pbEnchantBoost("Tap Power")
+	end
+	if incSet[7] or incSet[99] then
+		pbEnchantBoost("Coins")
+		pbEnchantBoost("Diamonds")
+	end
+	if diBr then
+		pbEnchantBoost("Diamonds")
+		pbEnchantBoost("Tap Power")
+		pbEnchantBoost("Criticals")
+	elseif ndBr and not incSet[63] then
+		pbEnchantBoost("Tap Power")
+		pbEnchantBoost("Strong Pets")
+		pbEnchantBoost("Criticals")
+	end
+	tracked._rankStarEnchantBoostOrder = boostOrd
 end
 
 --[[ Активная ранговая цель по звёздам (то же состояние ACTIVE, что и GUIs.Ranks):
@@ -5944,24 +6023,33 @@ function ARQ.getEquippedEnchantRows(s)
 	return rows
 end
 
---[[ Копия приоритетов enchant: «Treasure Hunter» первым (ранк-слот: collect/misc/ключи). ]]
-function ARQ.enchantPriorityTreasureHunterFirst(priority)
+--[[ RankStars: Treasure Hunter при loot-целях + префикс DPS/валюты по Types.Goals (без мутации cfg). ]]
+function ARQ.enchantPriorityRankStarMerge(priority, thFirst, boostList)
 	if type(priority) ~= "table" then
 		return priority
 	end
-	local name = cfg().rankStarTreasureHunterEnchantName
-	if type(name) ~= "string" or name == "" then
-		name = "Treasure Hunter"
-	end
 	local seen = {}
 	local out = {}
-	seen[name] = true
-	out[1] = name
-	for _, n in ipairs(priority) do
-		if type(n) == "string" and not seen[n] then
+	local function add(n)
+		if type(n) == "string" and n ~= "" and not seen[n] then
 			seen[n] = true
 			out[#out + 1] = n
 		end
+	end
+	if thFirst == true then
+		local tn = cfg().rankStarTreasureHunterEnchantName
+		if type(tn) ~= "string" or tn == "" then
+			tn = "Treasure Hunter"
+		end
+		add(tn)
+	end
+	if type(boostList) == "table" then
+		for _, n in ipairs(boostList) do
+			add(n)
+		end
+	end
+	for _, n in ipairs(priority) do
+		add(n)
 	end
 	return out
 end
@@ -6034,10 +6122,16 @@ function ARQ.tryQuestEquipEnchantFromInventory(eggMode)
 			priority = cfg().enchantFarmPriorityEarlyZones
 		end
 	end
-	if not eggMode and cfg().rankStarLootGoalsBoostTreasureHunter ~= false then
+	if not eggMode then
 		local tr = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
-		if tr and tr._rankStarSynth == true and tr._rankStarTreasureHunterLootGoals == true then
-			priority = ARQ.enchantPriorityTreasureHunterFirst(priority)
+		local syn = tr and tr._rankStarSynth == true
+		local wantTh = cfg().rankStarLootGoalsBoostTreasureHunter ~= false and syn and tr._rankStarTreasureHunterLootGoals == true
+		local boostList = nil
+		if cfg().rankStarGoalEnchantBoost ~= false and syn and type(tr._rankStarEnchantBoostOrder) == "table" and #tr._rankStarEnchantBoostOrder > 0 then
+			boostList = tr._rankStarEnchantBoostOrder
+		end
+		if wantTh or boostList then
+			priority = ARQ.enchantPriorityRankStarMerge(priority, wantTh, boostList)
 		end
 	end
 	if type(priority) ~= "table" or #priority == 0 then
@@ -9287,7 +9381,15 @@ function AutoRankRuntimeState.tryClaimRankRewards()
 		return
 	end
 	local now = tick()
-	if now - Ticks.lastClaimTick < (cfg().claimInterval or 0.35) then
+	local claimIv = tonumber(cfg().claimInterval) or 0.35
+	local trCr = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
+	if trCr and trCr._rankStarSynth == true and cfg().rankStarClaimRewardsAggressive ~= false then
+		local riv = tonumber(cfg().rankStarClaimIntervalWhenRankStar)
+		if riv and riv > 0 then
+			claimIv = math.min(claimIv, riv)
+		end
+	end
+	if now - Ticks.lastClaimTick < claimIv then
 		return
 	end
 	do
@@ -9838,27 +9940,6 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		end
 		return math.max(1, 10 - math.floor(red + 1e-6))
 	end
-	local function fflagOk(ffKeyName)
-		if not FFlags or type(FFlags.Get) ~= "function" or not FFlags.Keys then
-			return false
-		end
-		local k = FFlags.Keys[ffKeyName]
-		if not k then
-			return false
-		end
-		local okFf = false
-		pcall(function()
-			okFf = FFlags.Get(k) == true
-		end)
-		if okFf then
-			return true
-		end
-		local bypass = false
-		pcall(function()
-			bypass = FFlags.CanBypass and FFlags.CanBypass() == true
-		end)
-		return bypass == true
-	end
 	local function pivotMachine(machShort)
 		if not cfg().pivotBeforeRemotePurchases then
 			return true
@@ -9890,7 +9971,7 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		local machName = kind == "rainbow" and "RainbowMachine" or "GoldMachine"
 		local perkNm = kind == "rainbow" and "RainbowReduction" or "GoldReduction"
 		local candField = kind == "rainbow" and "CanRainbowMachine" or "CanGoldMachine"
-		if not fflagOk(machName) then
+		if not safeFflagKeyOnOrBypass(machName) then
 			return false
 		end
 		if MachineCmds and type(MachineCmds.CanUse) == "function" then
@@ -10030,18 +10111,8 @@ function AutoRankRuntimeState.tryRankStarFusePulse(tracked)
 	end
 	local skipEq = cfg().rankStarFuseSkipEquippedPets ~= false
 	if FFlags and FFlags.Keys and FFlags.Keys.FuseMachine and type(FFlags.Get) == "function" then
-		local okf = false
-		pcall(function()
-			okf = FFlags.Get(FFlags.Keys.FuseMachine) == true
-		end)
-		if not okf then
-			local byp = false
-			pcall(function()
-				byp = FFlags.CanBypass and FFlags.CanBypass() == true
-			end)
-			if not byp then
-				return
-			end
+		if not safeFflagKeyOnOrBypass("FuseMachine") then
+			return
 		end
 	end
 	if MachineCmds and type(MachineCmds.CanUse) == "function" then
@@ -10189,28 +10260,6 @@ function AutoRankRuntimeState.tryRankStarKeyPulse(tracked)
 	end
 	local maxChestD = tonumber(cfg().rankStarKeyChestMaxStuds) or 56
 
-	local function fflagChest(keyName)
-		if not FFlags or type(FFlags.Get) ~= "function" or not FFlags.Keys then
-			return false
-		end
-		local k = FFlags.Keys[keyName]
-		if not k then
-			return false
-		end
-		local on = false
-		pcall(function()
-			on = FFlags.Get(k) == true
-		end)
-		if on then
-			return true
-		end
-		local bypass = false
-		pcall(function()
-			bypass = FFlags.CanBypass and FFlags.CanBypass() == true
-		end)
-		return bypass == true
-	end
-
 	local function nearestPivotDist(tag)
 		local ch = LocalPlayer.Character
 		local pp = ch and ch.PrimaryPart
@@ -10252,7 +10301,7 @@ function AutoRankRuntimeState.tryRankStarKeyPulse(tracked)
 		return false
 	end
 
-	if needHacker and fflagChest("HackerChest") then
+	if needHacker and safeFflagKeyOnOrBypass("HackerChest") then
 		local d = nearestPivotDist("Hacker Chest")
 		if d and d <= maxChestD then
 			if tryInvoke("HackerKey_Unlock", 1) then
@@ -10261,7 +10310,7 @@ function AutoRankRuntimeState.tryRankStarKeyPulse(tracked)
 		end
 	end
 
-	if needCrystalUnlock and fflagChest("CrystalChest") then
+	if needCrystalUnlock and safeFflagKeyOnOrBypass("CrystalChest") then
 		local castleOk = false
 		pcall(function()
 			local sv = Save and Save.Get and Save.Get()
@@ -10936,6 +10985,13 @@ function AR.Reward.tick()
 	end
 	local now = tick()
 	local iv = tonumber(cfg().freeGiftsCheckInterval) or 30
+	local trFg = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
+	if trFg and trFg._rankStarSynth == true and cfg().rankStarFreeGiftsAggressive ~= false then
+		local riv = tonumber(cfg().rankStarFreeGiftsCheckIntervalWhenRankStar)
+		if riv and riv > 0 then
+			iv = math.min(iv, riv)
+		end
+	end
 	if now - (Ticks.lastFreeGiftsTick or 0) < iv then
 		return
 	end
@@ -10996,6 +11052,13 @@ function AR.Lootbox.tick()
 	end
 	local now = tick()
 	local iv = tonumber(cfg().lootboxOpenInterval) or 1.5
+	local trLb = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
+	if trLb and trLb._rankStarSynth == true and cfg().rankStarLootboxAggressive ~= false then
+		local riv = tonumber(cfg().rankStarLootboxOpenIntervalWhenRankStar)
+		if riv and riv > 0 then
+			iv = math.min(iv, riv)
+		end
+	end
 	if now - (Ticks.lastLootboxTick or 0) < iv then
 		return
 	end
