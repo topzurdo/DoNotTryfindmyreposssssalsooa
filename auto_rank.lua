@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 23
+local AUTO_RANK_RUNTIME_VERSION = 24
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -11510,7 +11510,8 @@ function AR.Cons.ensureSprinklerCmds()
 	return AR.Cons.SprinklerCmds
 end
 
-local AR_CONS_TICK_PRIO = {
+--[[ Порядок modern consumables tick: не local — лимит локалей главного chunk Luau (~200). ]]
+AR.Cons.tickPrioPotions = {
 	{ fn="flag",      name="Hasty",       prio=10, cond="inDottedBox",
 		toggleCfgKey="consumeFlagsHasty",      reserveCfgKey="consumeReserveHasty",      idCfgKey="consumeFlagIdHasty" },
 	{ fn="flag",      name="Strength",    prio=10, cond="inDottedBox",
@@ -11538,7 +11539,6 @@ local AR_CONS_TICK_PRIO = {
 	{ fn="fruit",    name="Fruit",        prio=3,  cond="alwaysOn",
 		toggleCfgKey="consumeFruitsAuto",    reserveCfgKey="consumeReserveFruits",     maxCfgKey="consumeFruitMaxPerTick" },
 }
-AR.Cons.tickPrioPotions = AR_CONS_TICK_PRIO
 
 function AR.Cons.tick()
 	if cfg().autoConsumeEnabled ~= true then
@@ -11565,7 +11565,7 @@ function AR.Cons.tick()
 	local cfg_t = cfg()
 	local maxActions = math.max(1, math.floor(tonumber(cfg_t.consumeMaxActionsPerTick) or 1))
 	local actionsDone = 0
-	for _, e in ipairs(AR_CONS_TICK_PRIO) do
+	for _, e in ipairs(AR.Cons.tickPrioPotions or {}) do
 		if cfg_t[e.toggleCfgKey] == true and AR.Cons.conditionMet(e.cond) then
 			local consumed = false
 			if e.fn == "fruit" then
