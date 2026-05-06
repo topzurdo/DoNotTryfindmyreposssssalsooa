@@ -135,7 +135,15 @@ return {
 	--[[ GoldMachine_Activate / RainbowMachine_Activate по Save.Goals GOLD_PET,BEST_GOLD_PET / RAINBOW_PET,BEST_RAINBOW_PET. ]]
 	rankStarAutoMachines = true,
 	rankStarMachineHbInterval = 2.75,
+	-- Gold/Rainbow машины не ждать конца hatch-пайплайна (иначе endless hatch глушит конверсию петов).
+	rankStarMachineDuringHatch = true,
 	rankStarMachineSkipEquippedPets = true,
+	--[[ Если ни одного кандидата без экипа — второй проход по всем петам (иначе голд/райнбо стоят на 0 при «весь инвентарь экипирован»). ]]
+	rankStarMachineRetryIncludingEquipped = true,
+	--[[ Дополнять wantG/wantR по скрейпу GUIs.Ranks: любая пара cur/tot (cur<tot) в контексте «golden/rainbow» — даже если в Save уже нет незакрытого Type 4/40/5/41 (рассинхрон MakeTitle/Directories со слотом). ]]
+	rankStarMachineInferFromGuiBlob = true,
+	--[[ При активных GOLD/RAINBOW в Save.Goals и синтезе RankStars не чаще хэтча, чем раз в N сек (даёт машинам окон между открытиями яиц). ]]
+	rankStarHatchMinIntervalWhenMachineGoalSec = 4.5,
 	--[[ Только алмазные breakables: если false и в слоте одновременно обычные break/миникороба — не сужать карту, только сортировка (rankStarPrioritizeDiamondWhenMixedBreakGoals). ]]
 	rankStarDiamondBreakableExclusiveFilter = false,
 	rankStarPrioritizeDiamondWhenMixedBreakGoals = true,
@@ -189,6 +197,8 @@ return {
 	-- Перед Comet_Spawn для «…in best area»: та же max-зона + pivot к точке телепорта зоны (иначе комета падает не на фарм-якорь).
 	questCometPivotNearFarmAnchorBeforeSpawn = true,
 	questCometFarmNearStuds = 96,
+	--[[ После «area busy» от Comet_Spawn: игнорировать hasActiveRandomEvent(comet) N сек — иначе ложный active блокирует повтор. ]]
+	questCometStaleActiveGuardBackoff = 22,
 	-- Не расходовать Misc на gift/comet если текст только про мировые спавны — но цели про coin/item jar («…in best area») не резать (см. tryQuestSpawnInventoryBreakablesFromBlob).
 	questSpawnInventorySkipWorldSpawnObjectives = true,
 	-- Тексты целей Rank (справа) без GoalCmds — скрейп GUI.Rank / GoalsSide для Comet/Jar спавна при no_goal.

@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 24
+local AUTO_RANK_RUNTIME_VERSION = 26
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -1121,6 +1121,7 @@ Ticks.lastPetFarmAnchorSnapTick = 0
 local autoFarmEnabledZone = nil
 Ticks.lastQuestFlagTick = 0
 Ticks.lastQuestSpawnInventoryBreakTick = 0
+Ticks.questCometIgnoreHasActiveUntil = 0
 Ticks.lastBuiltInAutoTapperTick = 0
 Ticks.lastFreeGiftsTick = 0
 Ticks.lastLootboxTick = 0
@@ -3558,6 +3559,12 @@ function QuestAssist.flattenObjectiveText(tracked, opts)
 		return ""
 	end
 	local parts = {}
+	if opts.omitRankGoalsGuiAppend ~= true and (tracked._rankStarSynth == true or tracked._rankGuiSynth == true) then
+		local guiBlob = QuestAssist.rankGoalsGuiBlobLower()
+		if guiBlob ~= "" then
+			table.insert(parts, guiBlob)
+		end
+	end
 	if tracked._generatorName then
 		table.insert(parts, tostring(tracked._generatorName))
 	end
@@ -3574,12 +3581,6 @@ function QuestAssist.flattenObjectiveText(tracked, opts)
 					end
 				end
 			end
-		end
-	end
-	if opts.omitRankGoalsGuiAppend ~= true and (tracked._rankStarSynth == true or tracked._rankGuiSynth == true) then
-		local guiBlob = QuestAssist.rankGoalsGuiBlobLower()
-		if guiBlob ~= "" then
-			table.insert(parts, guiBlob)
 		end
 	end
 	return table.concat(parts, " ")
@@ -3877,6 +3878,39 @@ function QuestAssist.guiMentionsEggRankGoal()
 	return string.find(b, "hatch", 1, true) ~= nil or string.find(b, "egg", 1, true) ~= nil
 end
 
+--[[ Незакрытая голд/райнбо по тексту сайд-панели: cur/tot с cur < tot рядом с ключевым словом (Save может считать Type 4/40 уже выполненным, а UI ещё показывает долю). ]]
+function QuestAssist.rankStarGuiBlobGoldRainbowIncompleteHints()
+	local b = QuestAssist.rankGoalsGuiBlobLower()
+	if type(b) ~= "string" or b == "" then
+		return false, false
+	end
+	local wantG, wantR = false, false
+	local pos = 1
+	while pos <= #b do
+		local s, e, cur, tot = string.find(b, "(%d+)%s*/%s*(%d+)", pos)
+		if not s then
+			break
+		end
+		local c, t = tonumber(cur), tonumber(tot)
+		if c and t and t > 0 and c < t then
+			local ctx = string.sub(b, math.max(1, s - 96), math.min(#b, e + 96))
+			if not wantG then
+				if string.find(ctx, "golden", 1, true)
+					or string.find(ctx, "gold pet", 1, true)
+					or string.find(ctx, "best gold", 1, true)
+					or string.find(ctx, "make gold", 1, true) then
+					wantG = true
+				end
+			end
+			if not wantR and string.find(ctx, "rainbow", 1, true) then
+				wantR = true
+			end
+		end
+		pos = e + 1
+	end
+	return wantG, wantR
+end
+
 --[[ Текст ранговой цели по звёздам: в Directory.Rewards ключ = 1..N, в UI заголовок = QuestCmds.MakeTitle(Save.Goals[*].Stars == slot). ]]
 function QuestAssist.resolveRankStarObjectiveTitle(save, ranksDir, rewardSlot)
 	local slotN = tonumber(rewardSlot)
@@ -4040,6 +4074,7 @@ function QuestAssist.decorateRankStarSynthTracked(tracked, save, rewardSlot)
 				wantsEgg = true
 			elseif t == 5 or t == 41 then
 				gr = true
+				wantsEgg = true
 			elseif t == 42 then
 				hatchRare = true
 				wantsEgg = true
@@ -4081,6 +4116,16 @@ function QuestAssist.decorateRankStarSynthTracked(tracked, save, rewardSlot)
 				-- FREE_GIFT / CLAIM_FREE_DIAMONDS — hb freeGifts/rewards.
 			end
 			--[[ Частые «инстанс» активности Rank: при цели нужен вход через UI/GoalCmds; Minigame-пульс уже обрабатывает inside-instance.]]
+		end
+	end
+
+	if cfg().rankStarMachineInferFromGuiBlob ~= false then
+		local gBlob, rBlob = QuestAssist.rankStarGuiBlobGoldRainbowIncompleteHints()
+		if gBlob then
+			gg = true
+		end
+		if rBlob then
+			gr = true
 		end
 	end
 
@@ -4906,6 +4951,9 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		local a, b = AR.Net.invoke(remote, ...)
 		if a ~= nil and a ~= false then
 			Ticks.lastQuestSpawnInventoryBreakTick = now
+			if remote == "Comet_Spawn" then
+				Ticks.questCometIgnoreHasActiveUntil = nil
+			end
 			log("quest_misc_spawn", remote, detail, ...)
 			traceThrottled(
 				"misc_spawn_" .. tostring(remote),
@@ -4920,6 +4968,10 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 		end
 		if ARQ.miscSpawnFailureShouldCooldown(b) then
 			Ticks.lastQuestSpawnInventoryBreakTick = now
+			if remote == "Comet_Spawn" then
+				Ticks.questCometIgnoreHasActiveUntil = tick()
+					+ (tonumber(cfg().questCometStaleActiveGuardBackoff) or 22)
+			end
 			traceThrottled("misc_spawn_area_busy_" .. tostring(remote), 12, "pulse.quest", remote, "area busy, backoff", b)
 			return false
 		end
@@ -5024,9 +5076,12 @@ function ARQ.tryQuestSpawnInventoryBreakablesFromBlob(blob)
 				end
 			end
 		end
-		if hasActiveRandomEvent("comet") then
-			traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "Comet_Spawn", "skip - already active comet")
-			return
+		local ignCometUntil = tonumber(Ticks.questCometIgnoreHasActiveUntil) or 0
+		if not (tick() < ignCometUntil) then
+			if hasActiveRandomEvent("comet") then
+				traceThrottled("misc_spawn_skip_active", 8, "pulse.quest", "Comet_Spawn", "skip - already active comet")
+				return
+			end
 		end
 		local uid = miscUidForIds({ "Comet" })
 		if uid and try("Comet_Spawn", "comet", uid) then
@@ -6497,7 +6552,8 @@ function AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, require
 		return nil
 	end
 	local activeTier = ARQ.activePotionMaxTier(pid)
-	local bypassActiveBuff = type(requiredTier) == "number" and cfg().questConsumeBypassActiveBuffForTierForced ~= false
+	local tierForcedOk = type(requiredTier) == "number" and requiredTier >= 1
+	local bypassActiveBuff = tierForcedOk and cfg().questConsumeBypassActiveBuffForTierForced ~= false
 	if not bypassActiveBuff and activeTier > 0 then
 		return nil
 	end
@@ -6513,7 +6569,8 @@ function AR.Cons.makePotionConsumeCandidate(cont, PotionItem, uid, data, require
 	if type(requiredTier) == "number" and requiredTier >= 1 and tier ~= requiredTier then
 		return nil
 	end
-	if activeTier > 0 and tier <= activeTier then
+	local allowTierForQuest = bypassActiveBuff and tier == requiredTier
+	if activeTier > 0 and tier <= activeTier and not allowTierForQuest then
 		return nil
 	end
 	if not AR.Cons.canUsePotionTier(tier) then
@@ -7215,7 +7272,7 @@ do
 		if not tracked or not EggsUtil or not EggCmds then
 			return nil
 		end
-		local blob = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
+		local blob = string.lower(QuestAssist.objectiveTextLower(tracked))
 		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
 			return nil
 		end
@@ -8558,9 +8615,18 @@ AR.ARC = (function()
 			return
 		end
 	end
-	if now - Ticks.lastQuestHatchTick < (cfg().questHatchAssistInterval or 1.1) then
-		hatchSkipDiag("assist_interval")
-		return
+	do
+		local baseIv = tonumber(cfg().questHatchAssistInterval) or 1.1
+		local machIv = tonumber(cfg().rankStarHatchMinIntervalWhenMachineGoalSec)
+		if tracked and tracked._rankStarSynth == true
+			and (tracked._rankStarGoldMachineIncomplete == true or tracked._rankStarRainbowMachineIncomplete == true)
+			and machIv and machIv > baseIv then
+			baseIv = machIv
+		end
+		if now - Ticks.lastQuestHatchTick < baseIv then
+			hatchSkipDiag("assist_interval")
+			return
+		end
 	end
 	local n, fromQuestText = 0, false
 	local pickOk, pickErr = pcall(function()
@@ -9267,6 +9333,9 @@ function AutoRankRuntimeState.runQuestAssistPulse()
 		pcall(function()
 			ARQ.tryTravelToTechStuckRetry(tracked)
 		end)
+		pcall(function()
+			AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
+		end)
 	end
 	local pfOk, pfErr = pcall(function()
 		AR.QuestWorldHelpers.tryQuestPlaceFlexibleFlag(tracked)
@@ -9925,8 +9994,10 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 	if okInSt and inside then
 		return
 	end
-	if hatchSequenceBlocksWorldTeleport() or hatchAsyncPipelineActive() then
-		return
+	if cfg().rankStarMachineDuringHatch ~= true then
+		if hatchSequenceBlocksWorldTeleport() or hatchAsyncPipelineActive() then
+			return
+		end
 	end
 	if not Network or type(AR.Net.invoke) ~= "function" then
 		return
@@ -9944,6 +10015,7 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		return
 	end
 	local skipEq = cfg().rankStarMachineSkipEquippedPets ~= false
+	local retryInclEq = cfg().rankStarMachineRetryIncludingEquipped ~= false
 	local function perkBatch(perkName)
 		local red = 0
 		if MasteryCmds and type(MasteryCmds.HasPerk) == "function" and type(MasteryCmds.GetPerkPower) == "function"
@@ -9978,7 +10050,7 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		end
 		return pivotCharacterToCFrame(pivotPart.CFrame * CFrame.new(0, yOff, 0))
 	end
-	local function tryOne(kind)
+	local function tryOne(kind, skipEquippedPets)
 		local remoteName = kind == "rainbow" and "RainbowMachine_Activate" or "GoldMachine_Activate"
 		local machName = kind == "rainbow" and "RainbowMachine" or "GoldMachine"
 		local perkNm = kind == "rainbow" and "RainbowReduction" or "GoldReduction"
@@ -10000,7 +10072,7 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		local bestPet, bestBatch = nil, 0
 		for uid, pdata in pairs(s.Inventory.Pet) do
 			if type(pdata) == "table" and not pdata._lk then
-				if not skipEq or not petUidIsCurrentlyEquipped(s, uid) then
+				if skipEquippedPets ~= true or not petUidIsCurrentlyEquipped(s, uid) then
 					local petObj = nil
 					pcall(function()
 						petObj = ItemsLib.Pet:Get(uid)
@@ -10043,6 +10115,10 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		local okIv, okRes = pcall(function()
 			return AR.Net.invoke(remoteName, petUidInvoke, bestBatch)
 		end)
+		if okIv and not okRes then
+			traceThrottled("rankstar_machine_invoke_denied_" .. remoteName, 8, "[rankStars] machine invoke denied",
+				remoteName, "uid=", petUidInvoke, "batches=", bestBatch)
+		end
 		if okIv and okRes then
 			log("RankStars machine", remoteName, petUidInvoke, bestBatch)
 			pcall(function()
@@ -10055,12 +10131,30 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		end
 		return false
 	end
-	if wantR and tryOne("rainbow") then
-		return
-	end
 	if wantG then
-		tryOne("gold")
+		local sk = skipEq == true
+		if tryOne("gold", sk) then
+			return
+		end
+		if sk and retryInclEq then
+			if tryOne("gold", false) then
+				return
+			end
+		end
 	end
+	if wantR then
+		local sk = skipEq == true
+		if tryOne("rainbow", sk) then
+			return
+		end
+		if sk and retryInclEq then
+			if tryOne("rainbow", false) then
+				return
+			end
+		end
+	end
+	traceThrottled("rankstar_machine_no_activation", 10, "[rankStars] machine skipped",
+		"wantG=", wantG, "wantR=", wantR, "skipEq=", skipEq, "retryInclEq=", retryInclEq)
 end
 
 function AutoRankRuntimeState.tryRankStarFusePulse(tracked)
@@ -11705,6 +11799,16 @@ AR.HB.tasks = {
 	{ tag = "rankUpGui", interval = 0.5, fn = function() AutoRankRuntimeState.tryRankUpViaGui() end },
 	{ tag = "buyEggSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEggSlots() end },
 	{ tag = "buyEquipSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEquipSlots() end },
+	{ tag = "buyUpgrade", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyCheapestUpgrade() end },
+	{ tag = "minigame", interval = "hbIntervalQuestAssist", fn = function() AutoRankRuntimeState.tryMinigameAssistPulse() end },
+	{ tag = "questAssist", interval = "hbIntervalQuestAssist", fn = function()
+		local qaOk, qaErr = pcall(function()
+			AR.HB.state.trackedQuest, AR.HB.state.isHatching = AutoRankRuntimeState.runQuestAssistPulse()
+		end)
+		if not qaOk then
+			warnErr("runQuestAssistPulse", qaErr)
+		end
+	end },
 	{ tag = "rankStarMachines", interval = "rankStarMachineHbInterval", fn = function()
 		pcall(function()
 			AutoRankRuntimeState.tryRankStarMachinePulse(AR.HB.state.trackedQuest)
@@ -11719,16 +11823,6 @@ AR.HB.tasks = {
 		pcall(function()
 			AutoRankRuntimeState.tryRankStarKeyPulse(AR.HB.state.trackedQuest)
 		end)
-	end },
-	{ tag = "buyUpgrade", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyCheapestUpgrade() end },
-	{ tag = "minigame", interval = "hbIntervalQuestAssist", fn = function() AutoRankRuntimeState.tryMinigameAssistPulse() end },
-	{ tag = "questAssist", interval = "hbIntervalQuestAssist", fn = function()
-		local qaOk, qaErr = pcall(function()
-			AR.HB.state.trackedQuest, AR.HB.state.isHatching = AutoRankRuntimeState.runQuestAssistPulse()
-		end)
-		if not qaOk then
-			warnErr("runQuestAssistPulse", qaErr)
-		end
 	end },
 	{ tag = "buyInstanceZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyInstanceZone() end },
 	{ tag = "buyMainZone", interval = "hbIntervalAutoBuy", fn = function() ARZone.tryAutoBuyMainZone() end },
