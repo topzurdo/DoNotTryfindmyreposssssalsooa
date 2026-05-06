@@ -6485,10 +6485,23 @@ do
 		pcall(function()
 			part = EggsUtil.GetEggPart(n)
 		end)
-		if not part then
-			return nil
+		if part then
+			return AR.QuestWorldHelpers.getZoneIdFromInstance(part) or AR.QuestWorldHelpers.getZoneIdAtWorldPosition(part.Position)
 		end
-		return AR.QuestWorldHelpers.getZoneIdFromInstance(part) or AR.QuestWorldHelpers.getZoneIdAtWorldPosition(part.Position)
+		-- Fallback: lookup zone from Directory.Eggs via EggsUtil.GetByNumber
+		local dir = nil
+		pcall(function()
+			dir = EggsUtil.GetByNumber(n)
+		end)
+		if dir then
+			for _, key in ipairs({ "zone", "Zone", "world", "World", "area", "Area" }) do
+				local v = dir[key]
+				if type(v) == "string" and v ~= "" then
+					return AR.QuestWorldHelpers.normalizeZoneIdCandidate(v)
+				end
+			end
+		end
+		return nil
 	end
 
 	function AR.QuestWorldHelpers.questSpecifiesEggNumber(tracked)
@@ -6503,6 +6516,13 @@ do
 		pcall(function()
 			hi = EggCmds.GetHighestEggNumberAvailable() or 0
 		end)
+		if hi <= 0 then
+			pcall(function()
+				if EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" then
+					hi = EggsUtil.GetMaximumEggNumber() or 0
+				end
+			end)
+		end
 		if hi <= 0 then
 			return nil
 		end
@@ -6793,10 +6813,16 @@ end
 
 AR.ARC = (function()
 	local badEggDirNumbers = {}
+	local badEggDirNumbersTTL = {}
 
 	local function safeEggByNumber(n)
+		local now = tick()
 		if badEggDirNumbers[n] then
-			return nil
+			if badEggDirNumbersTTL[n] and now < badEggDirNumbersTTL[n] then
+				return nil
+			end
+			badEggDirNumbers[n] = nil
+			badEggDirNumbersTTL[n] = nil
 		end
 		local dir = nil
 		local ok, err = pcall(function()
@@ -6804,6 +6830,7 @@ AR.ARC = (function()
 		end)
 		if not ok then
 			badEggDirNumbers[n] = true
+			badEggDirNumbersTTL[n] = now + 60
 			traceThrottled("egg_dir_bad_" .. tostring(n), 30, "hatch", "skip egg", n, err)
 			return nil
 		end
@@ -7002,6 +7029,16 @@ AR.ARC = (function()
 			hi = EggCmds.GetHighestEggNumberAvailable() or 0
 		end)
 		if hi <= 0 then
+			pcall(function()
+				if EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" then
+					hi = EggsUtil.GetMaximumEggNumber() or 0
+				end
+			end)
+			if hi > 0 then
+				traceThrottled("hatch_fallback_max_egg_num", 60, "hatch", "GetHighestEggNumberAvailable=0, fallback GetMaximumEggNumber=", hi)
+			end
+		end
+		if hi <= 0 then
 			return 0
 		end
 		if HatchAssist.infinityAllowed(tracked) then
@@ -7031,6 +7068,16 @@ AR.ARC = (function()
 		pcall(function()
 			hi = EggCmds.GetHighestEggNumberAvailable() or 0
 		end)
+		if hi <= 0 then
+			pcall(function()
+				if EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" then
+					hi = EggsUtil.GetMaximumEggNumber() or 0
+				end
+			end)
+			if hi > 0 then
+				traceThrottled("hatch_zone_fallback_max_egg_num", 60, "hatch", "pickHighestEggInPhysicalZone: GetHighestEggNumberAvailable=0, fallback=", hi)
+			end
+		end
 		if hi <= 0 then
 			return 0
 		end
@@ -7064,9 +7111,10 @@ AR.ARC = (function()
 				if zn > 0 then
 					return zn, false
 				end
-				-- Если hatchOnlyMaxOwnedZone включен, не искать в других зонах
+				-- Если hatchOnlyMaxOwnedZone включен, попробовать глобальный pickEggNumber
+				-- (зона может не иметь яиц физически, но яйца доступны)
 				if cfg().hatchOnlyMaxOwnedZone then
-					return 0, false
+					traceThrottled("hatch_zone_no_egg_fallthrough", 60, "hatch", "hatchOnlyMaxOwnedZone: no egg in zone, falling through to global pick")
 				end
 				-- Max-owned zone had no affordable egg: fall through to zone scan / global pick instead of hard 0.
 			end
@@ -7530,6 +7578,17 @@ AR.ARC = (function()
 		error(pickErr)
 	end
 	if n <= 0 then
+		-- Diagnostic: log why no egg number was found
+		pcall(function()
+			local hiAvail = EggCmds and type(EggCmds.GetHighestEggNumberAvailable) == "function" and EggCmds.GetHighestEggNumberAvailable() or "no_func"
+			local hiMax = EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" and EggsUtil.GetMaximumEggNumber() or "no_func"
+			local maxAvailEgg = nil
+			pcall(function()
+				local s = Save and type(Save.Get) == "function" and Save.Get()
+				maxAvailEgg = s and s.MaximumAvailableEgg or "no_save_or_field"
+			end)
+			traceThrottled("hatch_no_egg_diag", 30, "hatch", "no_egg_number: GetHighestEggNumberAvailable=", hiAvail, "GetMaximumEggNumber=", hiMax, "Save.MaximumAvailableEgg=", maxAvailEgg)
+		end)
 		hatchSkipDiag("no_egg_number")
 		return
 	end
@@ -7636,6 +7695,13 @@ AR.ARC = (function()
 		pcall(function()
 			hi = EggCmds.GetHighestEggNumberAvailable() or 0
 		end)
+		if hi <= 0 then
+			pcall(function()
+				if EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" then
+					hi = EggsUtil.GetMaximumEggNumber() or 0
+				end
+			end)
+		end
 		for cand = hi, 1, -1 do
 			if cand ~= n then
 				local ed = safeEggByNumber(cand)
