@@ -40,21 +40,22 @@ local AutoRankWorld = {
 }
 AR.WorldProfile = AutoRankWorld
 
-local function pcallWrap0(f) return pcall(f) end
-local function pcallWrap1(f, a) return pcall(f, a) end
-local function pcallWrap2(f, a, b) return pcall(f, a, b) end
-local function pcallWrap3(f, a, b, c) return pcall(f, a, b, c) end
-local function pcallWrap4(f, a, b, c, d) return pcall(f, a, b, c, d) end
-AR.Log.pcallWrap0 = pcallWrap0
-AR.Log.pcallWrap1 = pcallWrap1
-AR.Log.pcallWrap2 = pcallWrap2
-AR.Log.pcallWrap3 = pcallWrap3
-AR.Log.pcallWrap4 = pcallWrap4
+local PcallWrap = {}
+function PcallWrap.wrap0(f) return pcall(f) end
+function PcallWrap.wrap1(f, a) return pcall(f, a) end
+function PcallWrap.wrap2(f, a, b) return pcall(f, a, b) end
+function PcallWrap.wrap3(f, a, b, c) return pcall(f, a, b, c) end
+function PcallWrap.wrap4(f, a, b, c, d) return pcall(f, a, b, c, d) end
+AR.Log.pcallWrap0 = PcallWrap.wrap0
+AR.Log.pcallWrap1 = PcallWrap.wrap1
+AR.Log.pcallWrap2 = PcallWrap.wrap2
+AR.Log.pcallWrap3 = PcallWrap.wrap3
+AR.Log.pcallWrap4 = PcallWrap.wrap4
 
 -- Defaults loader: remote only via HttpGet. Override URL with getgenv().AutoRankDefaultsUrl.
 local AUTO_RANK_DEFAULTS_URL_FALLBACK = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank_defaults.lua"
 
-local function loadAutoRankInternalDefaults()
+local INTERNAL_DEFAULTS = (function()
 	local g0 = (getgenv and getgenv()) or _G
 	local url = rawget(g0, "AutoRankDefaultsUrl")
 	if type(url) ~= "string" or url == "" then
@@ -73,9 +74,7 @@ local function loadAutoRankInternalDefaults()
 		end
 	end
 	error("[AutoRank] Failed to load auto_rank_defaults.lua via HttpGet.")
-end
-
-local INTERNAL_DEFAULTS = loadAutoRankInternalDefaults()
+end)()
 
 local G = (getgenv and getgenv()) or _G
 G.AutoRank = G.AutoRank or {}
@@ -472,7 +471,8 @@ end
 
 local Exec = {}
 
-local function execResolve(...)
+local ExecU = {}
+function ExecU.resolve(...)
 	local env = G
 	for _, name in ipairs({ ... }) do
 		if type(name) == "function" then
@@ -487,7 +487,7 @@ local function execResolve(...)
 end
 
 function Exec.getconnections(signal)
-	local gc = execResolve("getconnections")
+	local gc = ExecU.resolve("getconnections")
 	if not gc or not signal then
 		return {}
 	end
@@ -499,7 +499,7 @@ function Exec.getconnections(signal)
 end
 
 function Exec.fireProximityPrompt(prompt)
-	local fn = execResolve("fireproximityprompt", "FireProximityPrompt")
+	local fn = ExecU.resolve("fireproximityprompt", "FireProximityPrompt")
 	if fn and prompt then
 		local ok, err = pcall(fn, prompt)
 		if not ok and cfg().log then
@@ -509,20 +509,20 @@ function Exec.fireProximityPrompt(prompt)
 end
 
 function Exec.fireClickDetector(detector, dist)
-	local fn = execResolve("fireclickdetector", "FireClickDetector")
+	local fn = ExecU.resolve("fireclickdetector", "FireClickDetector")
 	if fn and detector then
 		pcall(fn, detector, dist or 0)
 	end
 end
 
 function Exec.fireTouchInterest(part, touchPart, toggle)
-	local fn = execResolve("firetouchinterest", "FireTouchInterest")
+	local fn = ExecU.resolve("firetouchinterest", "FireTouchInterest")
 	if fn and part and touchPart then
 		pcall(fn, part, touchPart, toggle or 0)
 	end
 end
 
-local function runRBXScriptConnections(signal)
+function ExecU.runRBXScriptConnections(signal)
 	local fired = false
 	for _, conn in ipairs(Exec.getconnections(signal)) do
 		if conn.Function then
@@ -533,11 +533,11 @@ local function runRBXScriptConnections(signal)
 	return fired
 end
 
-local function execFireRBXScriptSignal(signal)
+function ExecU.fireRBXScriptSignal(signal)
 	if not signal then
 		return false
 	end
-	local fs = execResolve("firesignal", "FireSignal")
+	local fs = ExecU.resolve("firesignal", "FireSignal")
 	if not fs then
 		return false
 	end
@@ -545,42 +545,42 @@ local function execFireRBXScriptSignal(signal)
 	return ok
 end
 
-local function clickGuiButtonRobust(btn)
+function ExecU.clickGuiButtonRobust(btn)
 	if not btn or not btn:IsA("GuiButton") then
 		return false
 	end
-	if runRBXScriptConnections(btn.Activated) then
+	if ExecU.runRBXScriptConnections(btn.Activated) then
 		return true
 	end
-	if execFireRBXScriptSignal(btn.Activated) then
+	if ExecU.fireRBXScriptSignal(btn.Activated) then
 		return true
 	end
 	if cfg().executorGuiClickFallbacks then
-		if runRBXScriptConnections(btn.MouseButton1Click) then
+		if ExecU.runRBXScriptConnections(btn.MouseButton1Click) then
 			return true
 		end
-		if execFireRBXScriptSignal(btn.MouseButton1Click) then
+		if ExecU.fireRBXScriptSignal(btn.MouseButton1Click) then
 			return true
 		end
-		if runRBXScriptConnections(btn.MouseButton2Click) then
+		if ExecU.runRBXScriptConnections(btn.MouseButton2Click) then
 			return true
 		end
-		if execFireRBXScriptSignal(btn.MouseButton2Click) then
+		if ExecU.fireRBXScriptSignal(btn.MouseButton2Click) then
 			return true
 		end
 	end
 	return false
 end
 
-local function tryFireEggOpenPrimaryInput()
+function ExecU.tryFireEggOpenPrimaryInput()
 	local mouse = LocalPlayer:GetMouse()
 	if not mouse then
 		return false
 	end
-	if runRBXScriptConnections(mouse.Button1Down) then
+	if ExecU.runRBXScriptConnections(mouse.Button1Down) then
 		return true
 	end
-	return execFireRBXScriptSignal(mouse.Button1Down) == true
+	return ExecU.fireRBXScriptSignal(mouse.Button1Down) == true
 end
 
 local function eggOpeningTextScanRoots()
@@ -644,7 +644,8 @@ do
 local netRecentTimestamps = {}
 local netRecentSize = 0
 
-local function netPriorityFor(name)
+local NetU = {}
+function NetU.priorityFor(name)
 	if not name then
 		return tonumber(cfg().netRateLimitDefaultPriority) or 5
 	end
@@ -678,7 +679,7 @@ local function netPriorityFor(name)
 	return tonumber(cfg().netRateLimitDefaultPriority) or 5
 end
 
-local function netWithinRate()
+function NetU.withinRate()
 	if cfg().netRateLimitEnabled == false then
 		return true
 	end
@@ -703,26 +704,26 @@ local function netWithinRate()
 	return netRecentSize < maxN
 end
 
-local function netRecord()
+function NetU.record()
 	netRecentSize = netRecentSize + 1
 	netRecentTimestamps[netRecentSize] = tick()
 end
 
-local function arNetDoInvoke(name, ...)
+function NetU.arInvoke(name, ...)
 	if not Network or type(Network.Invoke) ~= "function" then
 		return nil
 	end
 	return Network.Invoke(name, ...)
 end
 
-local function arNetDoFire(name, ...)
+function NetU.arFire(name, ...)
 	if not Network or type(Network.Fire) ~= "function" then
 		return
 	end
 	Network.Fire(name, ...)
 end
 
-local function arNetDoUnreliable(name, ...)
+function NetU.arUnreliable(name, ...)
 	if not Network or type(Network.UnreliableFire) ~= "function" then
 		return
 	end
@@ -733,13 +734,13 @@ function AR.Net.invoke(name, ...)
 	if not Network or type(Network.Invoke) ~= "function" then
 		return nil, "network_missing"
 	end
-	local prio = netPriorityFor(name)
-	if prio < 10 and not netWithinRate() then
+	local prio = NetU.priorityFor(name)
+	if prio < 10 and not NetU.withinRate() then
 		traceThrottled("net_drop_invoke_" .. tostring(name), 5, "net", "rate-limit drop invoke", name, "prio=", prio)
 		return nil, "rate_limited"
 	end
-	netRecord()
-	local ok, a, b, c, d = pcall(arNetDoInvoke, name, ...)
+	NetU.record()
+	local ok, a, b, c, d = pcall(NetU.arInvoke, name, ...)
 	if not ok then
 		local iv = 5
 		local tag = "net_err_invoke_" .. tostring(name)
@@ -757,13 +758,13 @@ function AR.Net.fire(name, ...)
 	if not Network or type(Network.Fire) ~= "function" then
 		return
 	end
-	local prio = netPriorityFor(name)
-	if prio < 10 and not netWithinRate() then
+	local prio = NetU.priorityFor(name)
+	if prio < 10 and not NetU.withinRate() then
 		traceThrottled("net_drop_fire_" .. tostring(name), 5, "net", "rate-limit drop fire", name, "prio=", prio)
 		return
 	end
-	netRecord()
-	local ok, err = pcall(arNetDoFire, name, ...)
+	NetU.record()
+	local ok, err = pcall(NetU.arFire, name, ...)
 	if not ok then
 		traceThrottled("net_err_fire_" .. tostring(name), 5, "net", "fire err", name, err)
 	end
@@ -773,12 +774,12 @@ function AR.Net.unreliable(name, ...)
 	if not Network or type(Network.UnreliableFire) ~= "function" then
 		return
 	end
-	if cfg().netRateLimitEnabled and not netWithinRate() then
+	if cfg().netRateLimitEnabled and not NetU.withinRate() then
 		traceThrottled("net_drop_unreliable_" .. tostring(name), 5, "net", "rate-limit drop unreliable", name)
 		return
 	end
-	netRecord()
-	local ok, err = pcall(arNetDoUnreliable, name, ...)
+	NetU.record()
+	local ok, err = pcall(NetU.arUnreliable, name, ...)
 	if not ok then
 		traceThrottled("net_err_unreliable_" .. tostring(name), 5, "net", "unreliable err", name, err)
 	end
@@ -996,14 +997,14 @@ local rankGoalsGuiBlobCacheTick = -1e9
 local rankGuiSynthProtectedInstanceId = nil
 local rankGuiSynthProtectedUntilTick = 0
 
-local function clearRankGuiSynthProtection()
+local RankSynthU = {}
+function RankSynthU.clear()
 	rankGuiSynthProtectedInstanceId = nil
 	rankGuiSynthProtectedUntilTick = 0
 end
-
-local function bumpRankGuiSynthProtectionFromTracked(tr)
+function RankSynthU.bumpFromTracked(tr)
 	if cfg().questSynthRankProtectInstanceFromAutoLeave == false then
-		clearRankGuiSynthProtection()
+		RankSynthU.clear()
 		return
 	end
 	if not tr or tr._rankGuiSynth ~= true or type(tr._synthInstanceId) ~= "string" or tr._synthInstanceId == "" then
@@ -1013,8 +1014,7 @@ local function bumpRankGuiSynthProtectionFromTracked(tr)
 	rankGuiSynthProtectedInstanceId = tr._synthInstanceId
 	rankGuiSynthProtectedUntilTick = tick() + ttl
 end
-
-local function rankGuiSynthProtectionAllowsStay(instanceId)
+function RankSynthU.allowsStay(instanceId)
 	if cfg().questSynthRankProtectInstanceFromAutoLeave == false then
 		return false
 	end
@@ -1239,46 +1239,32 @@ local function autoRankDisconnectAll()
 	hatchBusy = false
 	hatchBusyArmedAt = 0
 	hatchBusyToken += 1
-	cachedTrackedObjective = nil
-	cachedTrackedObjectiveZone = nil
-	ensureModulesCachedOk = false
-	Ticks.lastEnsureModulesHeartbeatTick = 0
-	Ticks.hatchAsyncGuardUntil = 0
-	Ticks.progressHatchProximityBackoffUntil = 0
-	if type(restoreRuntimeHooks) == "function" then
-		pcall(restoreRuntimeHooks)
-	end
-	if AR.Cons and type(AR.Cons.failUntil) == "table" then
-		table.clear(AR.Cons.failUntil)
-	end
-	local fc = AutoRankRuntimeState.farmCandidateCache
-	fc.list = nil
-	fc.diag = nil
-	fc.at = -1e9
 end
 
-local function autoRankRegisterConn(conn)
+local freeClaimAt = {}
+local function autoRankResetFreeClaimCooldowns()
+	for k in pairs(freeClaimAt) do
+		freeClaimAt[k] = nil
+	end
+end
+
+function ConnU.register(conn)
 	if conn and conn.Disconnect then
 		table.insert(AutoRankRuntimeState.connections, conn)
 	end
-	return conn
 end
 
 local taggedConnections = {}
-local function autoRankRegisterTaggedConn(tag, conn)
+function ConnU.registerTagged(tag, conn)
 	if not (tag and conn and conn.Disconnect) then
 		return conn
-	end
-	local prev = taggedConnections[tag]
-	if prev then
-		pcall(function() prev:Disconnect() end)
 	end
 	taggedConnections[tag] = conn
 	table.insert(AutoRankRuntimeState.connections, conn)
 	return conn
 end
-AR.registerConn = autoRankRegisterConn
-AR.registerTaggedConn = autoRankRegisterTaggedConn
+AR.registerConn = ConnU.register
+AR.registerTaggedConn = ConnU.registerTagged
 AR.taggedConnections = taggedConnections
 
 do
@@ -1286,7 +1272,7 @@ do
 	if prev and type(prev.disconnectAll) == "function" then
 		pcall(prev.disconnectAll)
 	end
-	AutoRankRuntimeState.disconnectAll = autoRankDisconnectAll
+	AutoRankRuntimeState.disconnectAll = ConnU.disconnectAll
 	AutoRankRuntimeState.AR = AR
 	AR.runtime = AutoRankRuntimeState
 	AR.connections = AutoRankRuntimeState.connections
@@ -1297,7 +1283,7 @@ do
 			pcall(function() c:Disconnect() end)
 			taggedConnections[k] = nil
 		end
-		autoRankDisconnectAll()
+		ConnU.disconnectAll()
 	end
 end
 
@@ -2081,7 +2067,7 @@ local function tryInstallNetworkInvokeDebugHook()
 	if not Network or type(Network.Invoke) ~= "function" then
 		return
 	end
-	local hf = execResolve("hookfunction", "replaceclosure")
+	local hf = ExecU.resolve("hookfunction", "replaceclosure")
 	if not hf then
 		return
 	end
@@ -2150,13 +2136,13 @@ local function tryInstallKickGuard()
 	if not lp then
 		return
 	end
-	local hf = execResolve("hookfunction", "replaceclosure")
+	local hf = ExecU.resolve("hookfunction", "replaceclosure")
 	if hf and not kickGuardKickProbeDone and cfg().kickGuardTryBlockClientKick == true then
 		kickGuardKickProbeDone = true
 		local fk = lp.Kick
 		if type(fk) == "function" then
 			local ok, err = pcall(function()
-				local ncMaker = execResolve("newcclosure")
+				local ncMaker = ExecU.resolve("newcclosure")
 				local function replacement(self, ...)
 					if cfg().kickGuardTryBlockClientKick ~= true then
 						if type(kickGuardKickOrig) == "function" then
@@ -2189,10 +2175,10 @@ local function tryInstallKickGuard()
 	if kickGuardNamecallProbeDone then
 		return
 	end
-	local gsm = execResolve("getnamecallmethod")
-	local grm = execResolve("getrawmetatable")
-	local sor = execResolve("setreadonly")
-	local ncMaker = execResolve("newcclosure")
+	local gsm = ExecU.resolve("getnamecallmethod")
+	local grm = ExecU.resolve("getrawmetatable")
+	local sor = ExecU.resolve("setreadonly")
+	local ncMaker = ExecU.resolve("newcclosure")
 	if not (gsm and grm and sor and ncMaker) then
 		kickGuardNamecallProbeDone = true
 		return
@@ -2254,7 +2240,7 @@ AR.AntiKick.tryInstall = tryInstallKickGuard
 AR.AntiKick.isBlockedPlaceId = antiKickIsBlockedPlaceId
 
 restoreRuntimeHooks = function()
-	local hf = execResolve("hookfunction", "replaceclosure")
+	local hf = ExecU.resolve("hookfunction", "replaceclosure")
 	if hf and Network and networkInvokeHookInstalled and type(networkInvokeOriginal) == "function" and type(Network.Invoke) == "function" then
 		pcall(hf, Network.Invoke, networkInvokeOriginal)
 	end
@@ -2269,8 +2255,8 @@ restoreRuntimeHooks = function()
 	kickGuardKickProbeDone = false
 
 	if kickGuardNamecallProbeDone and type(kickGuardNamecallOrig) == "function" then
-		local grm = execResolve("getrawmetatable")
-		local sor = execResolve("setreadonly")
+		local grm = ExecU.resolve("getrawmetatable")
+		local sor = ExecU.resolve("setreadonly")
 		if grm and sor then
 			pcall(function()
 				local mt = grm(game)
@@ -2303,7 +2289,7 @@ local function tryRegisterCrossPlaceScriptReload()
 	if crossPlaceQueueRegistered or cfg().crossPlaceAutoReload ~= true then
 		return
 	end
-	local q = execResolve("queue_on_teleport", "syn.queue_on_teleport", "queueonteleport", "QueueOnTeleport")
+	local q = ExecU.resolve("queue_on_teleport", "syn.queue_on_teleport", "queueonteleport", "QueueOnTeleport")
 	if type(q) ~= "function" then
 		traceThrottled("cross_place_no_queue", 45, "cross_place", "queue_on_teleport не найден (добавь UNC в экзекьютор)")
 		return
@@ -2361,10 +2347,10 @@ local function hookOrbNetwork()
 		return
 	end
 	orbNetHooked = true
-	autoRankRegisterTaggedConn("orbs_create", connCreate:Connect(orbsCreateHandler))
+	ConnU.registerTagged("orbs_create", connCreate:Connect(orbsCreateHandler))
 	local connClear = Network.Fired("Orbs: Clear")
 	if connClear and connClear.Connect then
-		autoRankRegisterTaggedConn("orbs_clear", connClear:Connect(orbsClearHandler))
+		ConnU.registerTagged("orbs_clear", connClear:Connect(orbsClearHandler))
 	end
 end
 
@@ -2891,7 +2877,7 @@ function ARUI.tryDismissRebirthUi()
 				if string.find(t, "click for more", 1, true) or string.find(t, "click for more <", 1, true) then
 					local btn = ARUI.resolveOverlayGuiButton(d)
 					if btn then
-						if clickGuiButtonRobust(btn) then
+						if ExecU.clickGuiButtonRobust(btn) then
 							log("rebirth GUI click", btn:GetFullName())
 							return
 						end
@@ -3091,20 +3077,20 @@ function ARUI.tryClickEggOpeningPrompt(opts)
 	local preferGui = cfg().eggOpeningPreferGuiButtonOverSyntheticMouse ~= false
 	if preferGui and type(matchLabel) == "userdata" and matchLabel.Parent then
 		local btn = ARUI.resolveOverlayGuiButton(matchLabel)
-		if btn and clickGuiButtonRobust(btn) then
+		if btn and ExecU.clickGuiButtonRobust(btn) then
 			log("egg Click-to-open GUI", btn:GetFullName())
 			return
 		end
 	end
 
-	if tryFireEggOpenPrimaryInput() then
+	if ExecU.tryFireEggOpenPrimaryInput() then
 		log("egg open primary (Mouse.Button1Down)")
 		return
 	end
 
 	if not preferGui and type(matchLabel) == "userdata" and matchLabel.Parent then
 		local btn = ARUI.resolveOverlayGuiButton(matchLabel)
-		if btn and clickGuiButtonRobust(btn) then
+		if btn and ExecU.clickGuiButtonRobust(btn) then
 			log("egg Click-to-open GUI", btn:GetFullName())
 		end
 	end
@@ -3161,7 +3147,7 @@ function ARUI.tryClickReturnToMaxAreaButton()
 					end)
 					if vis then
 						Ticks.lastReturnAreaGuiTick = now
-						local fired = clickGuiButtonRobust(btn)
+						local fired = ExecU.clickGuiButtonRobust(btn)
 						log("Return-to-area GUI", fired, btn:GetFullName())
 						return
 					end
@@ -3309,7 +3295,7 @@ function ARG.tryClickGuiTargetTree(gui)
 		return false
 	end
 	Ticks.lastQuestGuiClickTick = now
-	return clickGuiButtonRobust(targetBtn)
+	return ExecU.clickGuiButtonRobust(targetBtn)
 end
 
 local QuestAssist = {}
@@ -3831,7 +3817,7 @@ function ARG.refreshTrackedObjective()
 		cachedTrackedObjective = nil
 		cachedTrackedObjectiveZone = curZone
 		Ticks.lastQuestPickTick = 0
-		clearRankGuiSynthProtection()
+		RankSynthU.clear()
 	end
 	if now - Ticks.lastQuestPickTick < (cfg().questAssistInterval or 0.65) then
 		return cachedTrackedObjective
@@ -3867,7 +3853,7 @@ function ARG.refreshTrackedObjective()
 		local rs = QuestAssist.pickActiveRankStarRewardTrackedObjective()
 		if rs then
 			cachedTrackedObjective = rs
-			clearRankGuiSynthProtection()
+			RankSynthU.clear()
 			AutoRankRuntimeState.diagQuest = {
 				ok = true,
 				generator = rs._generatorName,
@@ -3880,7 +3866,7 @@ function ARG.refreshTrackedObjective()
 
 	if cfg().questOnlyRankStarObjectives then
 		cachedTrackedObjective = nil
-		clearRankGuiSynthProtection()
+		RankSynthU.clear()
 		AutoRankRuntimeState.diagGoalPick = AutoRankRuntimeState.diagGoalPick or {}
 		AutoRankRuntimeState.diagQuest = {
 			ok = false,
@@ -3892,13 +3878,13 @@ function ARG.refreshTrackedObjective()
 
 	cachedTrackedObjective = ARG.pickTrackedObjective()
 	if cachedTrackedObjective and cachedTrackedObjective._rankGuiSynth ~= true then
-		clearRankGuiSynthProtection()
+		RankSynthU.clear()
 	end
 	if not cachedTrackedObjective and cfg().questSynthRankTrackedFromGui ~= false then
 		local syn = QuestAssist.pickSynthTrackedObjectiveFromRankGui()
 		if syn then
 			cachedTrackedObjective = syn
-			bumpRankGuiSynthProtectionFromTracked(syn)
+			RankSynthU.bumpFromTracked(syn)
 			AutoRankRuntimeState.diagQuest = {
 				ok = true,
 				generator = syn._generatorName,
@@ -3910,7 +3896,7 @@ function ARG.refreshTrackedObjective()
 	end
 	if cachedTrackedObjective then
 		if cachedTrackedObjective._rankGuiSynth == true then
-			bumpRankGuiSynthProtectionFromTracked(cachedTrackedObjective)
+			RankSynthU.bumpFromTracked(cachedTrackedObjective)
 		end
 		AutoRankRuntimeState.diagQuest = {
 			ok = true,
@@ -7567,7 +7553,7 @@ AR.ARC = (function()
 			if type(id) ~= "string" or id == "" then
 				return false
 			end
-			if rankGuiSynthProtectionAllowsStay(id) then
+			if RankSynthU.allowsStay(id) then
 				return false
 			end
 			local mode = cfg().minigameAssistMode or "skip"
@@ -8575,7 +8561,7 @@ function AutoRankRuntimeState.tryRankUpViaGui()
 	local side = rankGui.Frame and rankGui.Frame.Side
 	local btn = side and side.MiddleRankUpReady
 	if btn and btn.Visible then
-		local fired = clickGuiButtonRobust(btn)
+		local fired = ExecU.clickGuiButtonRobust(btn)
 		log("rank up GUI MiddleRankUpReady", fired)
 	end
 end
@@ -9079,7 +9065,7 @@ function AutoRankRuntimeState.tryAutoClickMessageDialogYes()
 				or t2 == "ok!"
 				or string.find(t2, "ok!", 1, true) == 1
 			if isYes or isOk then
-				clicked = clickGuiButtonRobust(d) or clicked
+				clicked = ExecU.clickGuiButtonRobust(d) or clicked
 				if clicked then
 					log("Message dialog auto-clicked", isYes and "YES" or "OK", d:GetFullName())
 				end
@@ -9205,7 +9191,7 @@ function AR.Pets.installForceDisableListener()
 		AR.Pets.pendingReenable = true
 		traceThrottled("pets_force_disable_recv", 4, "pets", "AutoFarm_ForceDisable получен — пометил pendingReenable")
 	end)
-	autoRankRegisterTaggedConn("pets_autofarm_force_disable", conn)
+	ConnU.registerTagged("pets_autofarm_force_disable", conn)
 	AR.Pets.forceDisableListenerInstalled = true
 end
 
