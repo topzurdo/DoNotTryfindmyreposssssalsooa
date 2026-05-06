@@ -368,6 +368,8 @@ local AutoRankEmbeddedWorldProfiles = {
 
 local Ticks = {}
 Ticks.lastVerbosePulseTick = 0
+-- True между SetupEgg/SetupCustomEgg и возвратом из AttemptHatch (async hatch assist), чтобы hatchBusyEarlyRelease не снимал guard в паузу extraDelayBeforeAttemptHatchSec.
+Ticks.hatchEggPipelineInFlight = false
 local traceThrottleAt = {}
 local warnThrottleAt = {}
 
@@ -1089,6 +1091,9 @@ local function tryHatchBusyReleaseIfIdle(reason, armedToken)
 	if opening or hci then
 		return
 	end
+	if Ticks.hatchEggPipelineInFlight == true then
+		return
+	end
 	hatchBusy = false
 	hatchBusyArmedAt = 0
 	traceThrottled("hatch_busy_early_release", 10, "hatch", "hatchBusy cleared (idle OpeningEgg/HatchingCmds)", reason)
@@ -1152,6 +1157,7 @@ local function forceClearHatchBusyPipeline(reason, progressOnlyFlag, detail)
 	hatchBusyToken += 1
 	hatchBusy = false
 	hatchBusyArmedAt = 0
+	Ticks.hatchEggPipelineInFlight = false
 	Ticks.hatchAsyncGuardUntil = 0
 	if progressOnlyFlag then
 		local sec = tonumber(cfg().progressHatchBackoffOnProximityFailSec) or 18
@@ -6789,9 +6795,21 @@ do
 				return
 			end
 			local blobTracked = QuestAssist.objectiveTextLower(tracked)
-			local hasFlag = string.find(blobTracked, "flag", 1, true)
-			log("flag_diag_blob", "id=", tracked._id or "?", "hasFlag=", hasFlag and "YES" or "NO", "blob=", string.sub(blobTracked, 1, 200))
-			if not hasFlag then
+			local hasFlagKw = string.find(blobTracked, "flag", 1, true)
+			local genNm = type(tracked._generatorName) == "string" and tracked._generatorName or ""
+			local rankStarSynth = tracked._rankStarSynth == true or string.sub(genNm, 1, 10) == "RankStars_"
+			log(
+				"flag_diag_blob",
+				"id=",
+				tracked._id or "?",
+				"hasFlagKw=",
+				hasFlagKw and "YES" or "NO",
+				"rankStarSynth=",
+				rankStarSynth and "YES" or "NO",
+				"blob=",
+				string.sub(blobTracked, 1, 200)
+			)
+			if cfg().questAutoPlaceFlagOnlyWhenBlobSaysFlag ~= false and not hasFlagKw and not rankStarSynth then
 				return
 			end
 		elseif cfg().questAutoPlaceFlagWithoutTrackedGoal ~= false then
@@ -7222,7 +7240,39 @@ AR.ARC = (function()
 		pcall(function()
 			bal = CurrencyCmds.Get(cid) or 0
 		end)
-		return math.clamp(math.floor(bal / unit), 0, maxWanted)
+		local n = math.clamp(math.floor(bal / unit), 0, maxWanted)
+		if n < 1 then
+			return n
+		end
+		if CurrencyCmds and type(CurrencyCmds.CanAfford) == "function" then
+			local function canAffordCount(k)
+				if k < 1 then
+					return false
+				end
+				local okM = false
+				pcall(function()
+					okM = CurrencyCmds.CanAfford(cid, unit * k) == true
+				end)
+				return okM
+			end
+			if canAffordCount(n) then
+				return n
+			end
+			if n <= 1 then
+				return 0
+			end
+			local lo, hi = 0, n
+			while lo < hi do
+				local mid = math.floor((lo + hi + 1) / 2)
+				if canAffordCount(mid) then
+					lo = mid
+				else
+					hi = mid - 1
+				end
+			end
+			return lo
+		end
+		return n
 	end
 
 	local function suppressHatchDirectoryZoneError(stage, err, now, progressOnly)
@@ -8234,59 +8284,66 @@ AR.ARC = (function()
 				HatchAssist.pivotForEgg(eggDir, tracked)
 				task.wait(pivotDelay)
 			end
-			log("hatch_setup_start", "egg=", eggDir and eggDir._id, "n=", n, "amt=", hatchAmt, "customUid=", customUid or "nil")
-			if customUid then
-				HatchingCmds.SetupCustomEgg(customUid, eggDir, hatchAmt)
-			else
-				HatchingCmds.SetupEgg(eggDir, hatchAmt)
-			end
-			ensureAutoRankWorldSelection()
-			local modWorld = AutoRankWorld.active
-			local extraAH = modWorld and tonumber(modWorld.extraDelayBeforeAttemptHatchSec) or 0
-			if extraAH > 0 then
-				task.wait(extraAH)
-			end
-			local hatchOk, hatchWhy = HatchingCmds.AttemptHatch()
-			log("hatch_attempt_result", "ok=", hatchOk, "why=", tostring(hatchWhy), "egg=", eggDir and eggDir._id, "world=", modWorld and modWorld.id)
-			if hatchOk == false then
-				if eggDir and eggDir._id then
-					lastFailedHatchAttemptAt[eggDir._id] = tick()
+			Ticks.hatchEggPipelineInFlight = true
+			local innerOk, innerErr = pcall(function()
+				log("hatch_setup_start", "egg=", eggDir and eggDir._id, "n=", n, "amt=", hatchAmt, "customUid=", customUid or "nil")
+				if customUid then
+					HatchingCmds.SetupCustomEgg(customUid, eggDir, hatchAmt)
+				else
+					HatchingCmds.SetupEgg(eggDir, hatchAmt)
 				end
-				traceThrottled(
-					"hatch_attempt_failed",
-					12,
-					"hatch",
-					"AttemptHatch failed:",
-					tostring(hatchWhy),
-					"egg",
-					eggDir and eggDir._id,
-					"world",
-					modWorld and modWorld.id
-				)
-				if cfg().hatchAbortBusyOnAttemptFail ~= false then
-					local wl = string.lower(tostring(hatchWhy or ""))
-					if string.find(wl, "too far", 1, true) then
-						forceClearHatchBusyPipeline("attempt_too_far", progressOnly, hatchWhy)
-					end
-				end
-			end
-			if cfg().hideEggHatching and hatchOk == true then
 				ensureAutoRankWorldSelection()
-				local nBurst = tonumber(cfg().eggOpeningPostInvokeBurstCount)
-				local mw2 = AutoRankWorld.active
-				if mw2 and type(mw2.adjustEggOpeningBurstCount) == "function" then
-					local okAdj, nb = pcall(mw2.adjustEggOpeningBurstCount, nBurst)
-					if okAdj and type(nb) == "number" and nb >= 0 then
-						nBurst = nb
+				local modWorld = AutoRankWorld.active
+				local extraAH = modWorld and tonumber(modWorld.extraDelayBeforeAttemptHatchSec) or 0
+				if extraAH > 0 then
+					task.wait(extraAH)
+				end
+				local hatchOk, hatchWhy = HatchingCmds.AttemptHatch()
+				log("hatch_attempt_result", "ok=", hatchOk, "why=", tostring(hatchWhy), "egg=", eggDir and eggDir._id, "world=", modWorld and modWorld.id)
+				if hatchOk == false then
+					if eggDir and eggDir._id then
+						lastFailedHatchAttemptAt[eggDir._id] = tick()
+					end
+					traceThrottled(
+						"hatch_attempt_failed",
+						12,
+						"hatch",
+						"AttemptHatch failed:",
+						tostring(hatchWhy),
+						"egg",
+						eggDir and eggDir._id,
+						"world",
+						modWorld and modWorld.id
+					)
+					if cfg().hatchAbortBusyOnAttemptFail ~= false then
+						local wl = string.lower(tostring(hatchWhy or ""))
+						if string.find(wl, "too far", 1, true) then
+							forceClearHatchBusyPipeline("attempt_too_far", progressOnly, hatchWhy)
+						end
 					end
 				end
-				local dBurst = tonumber(cfg().eggOpeningPostInvokeBurstDelay)
-				if type(nBurst) == "number" and nBurst > 0 and type(dBurst) == "number" and dBurst >= 0 then
-					for _ = 1, nBurst do
-						task.wait(dBurst)
-						ARUI.tryClickEggOpeningPrompt({ ignoreThrottles = true })
+				if cfg().hideEggHatching and hatchOk == true then
+					ensureAutoRankWorldSelection()
+					local nBurst = tonumber(cfg().eggOpeningPostInvokeBurstCount)
+					local mw2 = AutoRankWorld.active
+					if mw2 and type(mw2.adjustEggOpeningBurstCount) == "function" then
+						local okAdj, nb = pcall(mw2.adjustEggOpeningBurstCount, nBurst)
+						if okAdj and type(nb) == "number" and nb >= 0 then
+							nBurst = nb
+						end
+					end
+					local dBurst = tonumber(cfg().eggOpeningPostInvokeBurstDelay)
+					if type(nBurst) == "number" and nBurst > 0 and type(dBurst) == "number" and dBurst >= 0 then
+						for _ = 1, nBurst do
+							task.wait(dBurst)
+							ARUI.tryClickEggOpeningPrompt({ ignoreThrottles = true })
+						end
 					end
 				end
+			end)
+			Ticks.hatchEggPipelineInFlight = false
+			if not innerOk then
+				traceThrottled("hatch_pipeline_inner_err", 8, "hatch", innerErr or "inner_fail")
 			end
 		end)
 		Ticks.hatchAsyncGuardUntil = tick() + (tonumber(cfg().hatchAsyncPostPipelineGrace) or 3)

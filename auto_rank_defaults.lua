@@ -275,6 +275,8 @@ return {
 		"Fruity",
 	},
 	questAutoPlaceFlag = true,
+	-- true: только если в тексте цели есть «flag», либо цель синтез ранговых звёзд (RankStars_* / _rankStarSynth).
+	questAutoPlaceFlagOnlyWhenBlobSaysFlag = true,
 	questPlaceFlagInterval = 2,
 	-- true: только в rank UI dotted box (старое поведение). false: с фермы — FlexibleFlagCmds.Consume(..., amount) через GetMaxPlaceAutomaticContext.
 	questPlaceFlagRequireDottedBox = false,
