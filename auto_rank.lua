@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 19
+local AUTO_RANK_RUNTIME_VERSION = 20
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -289,6 +289,24 @@ do
 		G.AutoRank._arNoGoalFallbackBalanceV8 = 1
 	end
 end
+do
+	local v = G.AutoRank._arRankStarKeysV1 or 0
+	if v < 1 then
+		if G.AutoRank.rankStarAutoKeys == nil then
+			G.AutoRank.rankStarAutoKeys = true
+		end
+		if tonumber(G.AutoRank.rankStarKeyHbInterval) == nil then
+			G.AutoRank.rankStarKeyHbInterval = 4
+		end
+		if tonumber(G.AutoRank.rankStarKeyChestMaxStuds) == nil then
+			G.AutoRank.rankStarKeyChestMaxStuds = 56
+		end
+		if G.AutoRank.rankStarLootGoalsBoostTreasureHunter == nil then
+			G.AutoRank.rankStarLootGoalsBoostTreasureHunter = true
+		end
+		G.AutoRank._arRankStarKeysV1 = 1
+	end
+end
 
 local function cfg()
 	return G.AutoRank
@@ -370,6 +388,9 @@ local Ticks = {}
 Ticks.lastVerbosePulseTick = 0
 -- True между SetupEgg/SetupCustomEgg и возвратом из AttemptHatch (async hatch assist), чтобы hatchBusyEarlyRelease не снимал guard в паузу extraDelayBeforeAttemptHatchSec.
 Ticks.hatchEggPipelineInFlight = false
+Ticks.lastRankStarMachineHbTick = 0
+Ticks.lastRankStarFuseHbTick = 0
+Ticks.lastRankStarKeyHbTick = 0
 local traceThrottleAt = {}
 local warnThrottleAt = {}
 
@@ -608,12 +629,14 @@ local EnchantCmds
 local ZonesUtil
 local PetEquipCmds, PetCmds, MachineCmds, UpgradeCmds
 local PetNetworking
+local ItemsLib
 local Gamepasses, CustomEggsCmds
 local DaycareCmds, DaycareLoot
 local FlexibleFlagCmds
 local MasteryCmds, ConsumableCmds
 local AutoFarmCmds, Signal
 local RandomEventCmds
+local FuseUtil
 
 local function safeIsInInstance(instanceId)
 	if not InstancingCmds or type(InstancingCmds.IsInInstance) ~= "function" then
@@ -905,6 +928,12 @@ local function ensureModules()
 		DaycareCmds = DaycareCmds or cacheReq(Client:WaitForChild("DaycareCmds"))
 		FlexibleFlagCmds = FlexibleFlagCmds or cacheReq(Client:WaitForChild("FlexibleFlagCmds"))
 		MasteryCmds = MasteryCmds or cacheReq(Client:WaitForChild("MasteryCmds"))
+		pcall(function()
+			ItemsLib = ItemsLib or cacheReq(ReplicatedStorage.Library:WaitForChild("Items"))
+		end)
+		pcall(function()
+			FuseUtil = FuseUtil or cacheReq(ReplicatedStorage.Library.Util:WaitForChild("FuseUtil"))
+		end)
 		ConsumableCmds = ConsumableCmds or cacheReq(Client:WaitForChild("ConsumableCmds"))
 		AutoFarmCmds = AutoFarmCmds or cacheReq(Client:WaitForChild("AutoFarmCmds"))
 		RandomEventCmds = RandomEventCmds or cacheReq(Client:WaitForChild("RandomEventCmds"))
@@ -1226,7 +1255,7 @@ local AutoRankRuntimeState = {
 	diagQuest = {},
 	diagTeleport = {},
 	diagGoalPick = {},
-	farmCandidateCache = { list = nil, at = -1e9, diag = nil },
+	farmCandidateCache = { list = nil, at = -1e9, diag = nil, diamondOnly = nil },
 	lastTutorialArrowTick = 0,
 }
 
@@ -2742,6 +2771,20 @@ local function getClaimableRewardKeys()
 	return keys
 end
 
+--[[ interval зоны: ускорить при незакрытых Rank целях ZONE/CURRENCY/MAP (см. decorateRankStarSynthTracked). ]]
+local function rankStarZonePurchaseThrottleInterval()
+	local iv = cfg().zonePurchaseInterval or 0.55
+	local hb = AR.HB
+	local tr = hb and hb.state and hb.state.trackedQuest
+	if tr and tr._rankStarSynth == true and tr._rankStarWantsAggressiveZoneProgress == true then
+		local mul = tonumber(cfg().rankStarZonePurchaseIntervalMultiplier) or 1
+		if mul > 0 and mul < 1 then
+			iv = math.max(0.08, iv * mul)
+		end
+	end
+	return iv
+end
+
 -- Chunk-local namespaces (Luau ≤200 locals per prototype): fewer top-level locals than many `local function`.
 local ARZone = {}
 
@@ -2792,7 +2835,7 @@ function ARZone.tryAutoBuyInstanceZone()
 		return
 	end
 	local now = tick()
-	if now - Ticks.lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
+	if now - Ticks.lastZonePurchaseTick < rankStarZonePurchaseThrottleInterval() then
 		return
 	end
 	local inst = InstancingCmds.Get and InstancingCmds.Get()
@@ -2906,7 +2949,7 @@ function ARZone.tryAutoBuyMainZone()
 		return
 	end
 	local now = tick()
-	if now - Ticks.lastZonePurchaseTick < (cfg().zonePurchaseInterval or 0.55) then
+	if now - Ticks.lastZonePurchaseTick < rankStarZonePurchaseThrottleInterval() then
 		return
 	end
 	local info = ARZone.getNextMainZonePurchaseInfo()
@@ -3824,6 +3867,214 @@ function QuestAssist.resolveRankStarObjectiveTitle(save, ranksDir, rewardSlot)
 	return titleFallback
 end
 
+--[[ Цели текущего рангового слота звёзд: Save.Goals[..].Stars == ключ награды; Type из Types.Quests.Goals. ]]
+function QuestAssist.rankStarSaveGoalIncomplete(g)
+	if type(g) ~= "table" then
+		return false
+	end
+	local amt = tonumber(g.Amount) or 0
+	local pr = tonumber(g.Progress) or 0
+	return pr < amt
+end
+
+function QuestAssist.collectSaveGoalsForRankStarSlot(save, slotN)
+	local out = {}
+	local sn = tonumber(slotN)
+	if not save or type(save.Goals) ~= "table" or not sn then
+		return out
+	end
+	for _, g in pairs(save.Goals) do
+		if type(g) == "table" and tonumber(g.Stars) == sn then
+			table.insert(out, g)
+		end
+	end
+	return out
+end
+
+--[[ Полная классификация активного слота RankStars под Types.Quests.Goals (ReplicatedStorage.Library.Types.Quests). ]]
+function QuestAssist.decorateRankStarSynthTracked(tracked, save, rewardSlot)
+	if not tracked or tracked._rankStarSynth ~= true or type(save) ~= "table" then
+		return
+	end
+	local slotGoals = QuestAssist.collectSaveGoalsForRankStarSlot(save, rewardSlot)
+	tracked._rankStarGoals = slotGoals
+	local incTypes = {}
+	local spawnHints = {}
+
+	local diBr, ndBr = false, false
+	local gg, gr = false, false
+	local hatchRare, wantsEgg = false, false
+	local potTierMax = nil
+
+	local zoneAggro = false
+	local useFruit = false
+	local useFlag = false
+	local fuse = false
+	local hatchCustom = false
+	local equipPetGoal = false
+	local indexPet = false
+
+	local keySecret, keyCrystalComb, keyCrystalChest, keyPrisonComb, keyHackerChest = false, false, false, false, false
+	local thLootGoals = false
+	--[[ Goal types: COLLECT_* / ключи — boost «Treasure Hunter» для выпадения Misc. ]]
+	local treasureHunterGoalTypes = {
+		[14] = true,
+		[15] = true,
+		[64] = true,
+		[65] = true,
+		[78] = true,
+		[85] = true,
+		[84] = true,
+		[101] = true,
+	}
+
+	local spawnHintFromType = {
+		-- BEST_* / RANDOM_* — подсказка для ARQ.tryQuestSpawnInventoryBreakablesFromBlob («in best area» + ключевое слово).
+		[37] = "coin jar in best area",
+		[38] = "comet in best area",
+		[39] = "mini chest in best area",
+		[43] = "pinata in best area",
+		[44] = "lucky block in best area",
+		[76] = "superior mini chest in best area",
+		[68] = "coin jar in best area randomly spawned",
+		[69] = "comet in best area randomly spawned",
+		[70] = "pinata in best area randomly spawned",
+		[71] = "lucky block in best area randomly spawned",
+		[77] = "superior mini chest in best area randomly spawned",
+	}
+
+	local ndBreakOne = {
+		[1] = true,
+		[21] = true,
+		[8] = true,
+		[73] = true,
+		[75] = true,
+		[76] = true,
+		[72] = true,
+		[77] = true,
+		[31] = true,
+		[32] = true,
+		[66] = true,
+		[67] = true,
+		[68] = true,
+		[69] = true,
+		[70] = true,
+		[71] = true,
+		[37] = true,
+		[38] = true,
+		[39] = true,
+		[43] = true,
+		[44] = true,
+		[63] = true,
+		[98] = true,
+	}
+
+	for _, g in ipairs(slotGoals) do
+		if QuestAssist.rankStarSaveGoalIncomplete(g) then
+			local t = tonumber(g.Type)
+			if t then
+				table.insert(incTypes, t)
+			end
+			if not t then
+			elseif t == 9 then
+				diBr = true
+			elseif ndBreakOne[t] then
+				ndBr = true
+				if spawnHintFromType[t] then
+					spawnHints[#spawnHints + 1] = spawnHintFromType[t]
+				end
+			elseif t == 6 or t == 81 or t == 79 then
+				zoneAggro = true
+			elseif t == 7 or t == 99 then
+				zoneAggro = true
+			elseif t == 3 or t == 20 then
+				wantsEgg = true
+			elseif t == 2 then
+				wantsEgg = true
+			elseif t == 4 or t == 40 then
+				gg = true
+				wantsEgg = true
+			elseif t == 5 or t == 41 then
+				gr = true
+			elseif t == 42 then
+				hatchRare = true
+				wantsEgg = true
+			elseif t == 83 then
+				hatchCustom = true
+				wantsEgg = true
+			elseif t == 111 then
+				wantsEgg = true
+			elseif t == 34 then
+				local pt = tonumber(g.PotionTier)
+				if pt and pt > 0 and (not potTierMax or pt > potTierMax) then
+					potTierMax = pt
+				end
+			elseif t == 35 then
+				useFruit = true
+			elseif t == 33 then
+				useFlag = true
+			elseif t == 19 then
+				fuse = true
+			elseif t == 80 then
+				equipPetGoal = true
+			elseif t == 47 then
+				indexPet = true
+				-- Серверную индексацию здесь не дёргаем; флаг можно использовать для усиления EquipBest/логики.
+			elseif t == 55 then
+				keySecret = true
+			elseif t == 56 then
+				keyCrystalComb = true
+				keyCrystalChest = true
+			elseif t == 78 then
+				keyPrisonComb = true
+			elseif t == 85 then
+				keyHackerChest = true
+			elseif treasureHunterGoalTypes[t] then
+				thLootGoals = true
+			elseif t == 10 or t == 11 or t == 12 or t == 13 or t == 57 then
+				-- Покупка/Upgrade зелий/enchant/фруктов — hb «upgradeItems» уже крутит часть этого.
+			elseif t == 18 or t == 100 then
+				-- FREE_GIFT / CLAIM_FREE_DIAMONDS — hb freeGifts/rewards.
+			end
+			--[[ Частые «инстанс» активности Rank: при цели нужен вход через UI/GoalCmds; Minigame-пульс уже обрабатывает inside-instance.]]
+		end
+	end
+
+	tracked._rankStarIncompleteTypes = incTypes
+	tracked._rankStarDiamondBreakablesIncomplete = diBr
+	tracked._rankStarNonDiamondBreakablesIncomplete = ndBr
+	tracked._rankStarSynthSpawnCue = #spawnHints > 0 and table.concat(spawnHints, " | ") or nil
+
+	tracked._rankStarGoldMachineIncomplete = gg
+	tracked._rankStarRainbowMachineIncomplete = gr
+	tracked._rankStarHatchRareIncomplete = hatchRare
+	tracked._rankStarWantsEggHatchAssist = wantsEgg
+	tracked._rankStarHatchCustomEggIncomplete = hatchCustom
+	tracked._rankStarWantsAggressiveZoneProgress = zoneAggro
+	tracked._rankStarUseFruitIncomplete = useFruit
+	tracked._rankStarFlagIncomplete = useFlag
+	tracked._rankStarFuseIncomplete = fuse
+	tracked._rankStarEquipPetGoalIncomplete = equipPetGoal
+	tracked._rankStarIndexPetGoalIncomplete = indexPet
+
+	if potTierMax then
+		tracked._rankStarForcedPotionTier = potTierMax
+	else
+		tracked._rankStarForcedPotionTier = nil
+	end
+
+	tracked._rankStarKeySecretCombine = keySecret
+	tracked._rankStarKeyCrystalCombine = keyCrystalComb
+	tracked._rankStarKeyCrystalChest = keyCrystalChest
+	tracked._rankStarKeyPrisonCombine = keyPrisonComb
+	tracked._rankStarKeyHackerChest = keyHackerChest
+	if thLootGoals or keySecret or keyCrystalComb or keyCrystalChest or keyPrisonComb or keyHackerChest then
+		tracked._rankStarTreasureHunterLootGoals = true
+	else
+		tracked._rankStarTreasureHunterLootGoals = false
+	end
+end
+
 --[[ Активная ранговая цель по звёздам (то же состояние ACTIVE, что и GUIs.Ranks):
 	после Rebirth>=1 модульные колбэки GoalCmds.Eggs/Zone/Use Potion/… возвращают nil — pickTrackedObjective пустой. ]]
 function QuestAssist.pickActiveRankStarRewardTrackedObjective()
@@ -3902,7 +4153,7 @@ function QuestAssist.pickActiveRankStarRewardTrackedObjective()
 				if #gen > 200 then
 					gen = string.sub(gen, 1, 200)
 				end
-				return {
+				local trk = {
 					Priority = 1_000_000,
 					_generatorName = gen,
 					_rankStarSynth = true,
@@ -3912,6 +4163,8 @@ function QuestAssist.pickActiveRankStarRewardTrackedObjective()
 						{ Title = title },
 					},
 				}
+				QuestAssist.decorateRankStarSynthTracked(trk, save, v25)
+				return trk
 			end
 		end
 	end
@@ -4129,6 +4382,9 @@ function QuestAssist.resolvePotionQuestTargetTier(tracked)
 	if type(fromTr) == "number" then
 		return fromTr
 	end
+	if tracked and type(tracked._rankStarForcedPotionTier) == "number" then
+		return tracked._rankStarForcedPotionTier
+	end
 	if cfg().questConsumeScrapeGuiForPotionTier == false then
 		return nil
 	end
@@ -4265,6 +4521,12 @@ end
 function QuestAssist.objectiveMentionsEggOrHatch(tracked)
 	if not tracked then
 		return false
+	end
+	if tracked._rankStarWantsEggHatchAssist == true then
+		return true
+	end
+	if tracked._rankStarHatchCustomEggIncomplete == true then
+		return true
 	end
 	local blob = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
 	return string.find(blob, "hatch", 1, true) ~= nil or string.find(blob, "egg", 1, true) ~= nil
@@ -4980,6 +5242,9 @@ function ARQ.tryQuestSpawnInventoryBreakables(tracked)
 		if type(flat) == "string" and flat ~= "" then
 			table.insert(chunks, string.lower(flat))
 		end
+		if tracked._rankStarSynth == true and type(tracked._rankStarSynthSpawnCue) == "string" and tracked._rankStarSynthSpawnCue ~= "" then
+			table.insert(chunks, string.lower(tracked._rankStarSynthSpawnCue))
+		end
 	end
 	local rg = QuestAssist.scrapeRankGoalsGuiBlobForMiscSpawn()
 	if type(rg) == "string" and rg ~= "" then
@@ -5679,6 +5944,28 @@ function ARQ.getEquippedEnchantRows(s)
 	return rows
 end
 
+--[[ Копия приоритетов enchant: «Treasure Hunter» первым (ранк-слот: collect/misc/ключи). ]]
+function ARQ.enchantPriorityTreasureHunterFirst(priority)
+	if type(priority) ~= "table" then
+		return priority
+	end
+	local name = cfg().rankStarTreasureHunterEnchantName
+	if type(name) ~= "string" or name == "" then
+		name = "Treasure Hunter"
+	end
+	local seen = {}
+	local out = {}
+	seen[name] = true
+	out[1] = name
+	for _, n in ipairs(priority) do
+		if type(n) == "string" and not seen[n] then
+			seen[n] = true
+			out[#out + 1] = n
+		end
+	end
+	return out
+end
+
 function ARQ.tryQuestEquipEnchantSimpleFill()
 	local now = tick()
 	if now - Ticks.lastEnchantEquipTick < (cfg().questEquipEnchantInterval or 2.2) then
@@ -5745,6 +6032,12 @@ function ARQ.tryQuestEquipEnchantFromInventory(eggMode)
 		local zoneNumber = tonumber(maxZoneTbl and maxZoneTbl.ZoneNumber) or 0
 		if zoneNumber > 0 and zoneNumber <= earlyMaxZoneNumber then
 			priority = cfg().enchantFarmPriorityEarlyZones
+		end
+	end
+	if not eggMode and cfg().rankStarLootGoalsBoostTreasureHunter ~= false then
+		local tr = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
+		if tr and tr._rankStarSynth == true and tr._rankStarTreasureHunterLootGoals == true then
+			priority = ARQ.enchantPriorityTreasureHunterFirst(priority)
 		end
 	end
 	if type(priority) ~= "table" or #priority == 0 then
@@ -6248,7 +6541,15 @@ function AR.Cons.tryQuestConsumeFruitLegacy()
 		return
 	end
 	local now = tick()
-	if now - Ticks.lastFruitConsumeTick < (cfg().questConsumeFruitsInterval or 1.5) then
+	local ivF = cfg().questConsumeFruitsInterval or 1.5
+	local trF = cachedTrackedObjective
+	if trF and trF._rankStarSynth == true and trF._rankStarUseFruitIncomplete == true then
+		local ir = tonumber(cfg().rankStarUseFruitConsumeInterval)
+		if type(ir) == "number" and ir > 0 then
+			ivF = math.min(ivF, ir)
+		end
+	end
+	if now - Ticks.lastFruitConsumeTick < ivF then
 		return
 	end
 	local s = Save and Save.Get and Save.Get()
@@ -6966,7 +7267,8 @@ do
 				"blob=",
 				string.sub(blobTracked, 1, 200)
 			)
-			if cfg().questAutoPlaceFlagOnlyWhenBlobSaysFlag ~= false and not hasFlagKw and not rankStarSynth then
+			local forceRankFlag = tracked._rankStarSynth == true and tracked._rankStarFlagIncomplete == true
+			if cfg().questAutoPlaceFlagOnlyWhenBlobSaysFlag ~= false and not hasFlagKw and not rankStarSynth and not forceRankFlag then
 				return
 			end
 		elseif cfg().questAutoPlaceFlagWithoutTrackedGoal ~= false then
@@ -6983,8 +7285,15 @@ do
 			return
 		end
 		local now = tick()
-		if now - Ticks.lastQuestFlagTick < (cfg().questPlaceFlagInterval or 2) then
-			log("flag_skip_cooldown", "left=", (cfg().questPlaceFlagInterval or 2) - (now - Ticks.lastQuestFlagTick))
+		local ivFg = cfg().questPlaceFlagInterval or 2
+		if tracked and tracked._rankStarSynth == true and tracked._rankStarFlagIncomplete == true then
+			local rq = tonumber(cfg().rankStarPlaceFlagIntervalWhenGoal)
+			if type(rq) == "number" and rq > 0 then
+				ivFg = math.min(ivFg, rq)
+			end
+		end
+		if now - Ticks.lastQuestFlagTick < ivFg then
+			log("flag_skip_cooldown", "left=", ivFg - (now - Ticks.lastQuestFlagTick))
 			return
 		end
 
@@ -8952,7 +9261,15 @@ function AutoRankRuntimeState.tryAutoEquipBestPets()
 		return
 	end
 	local now = tick()
-	if now - Ticks.lastAutoEquipBestTick < (cfg().autoEquipBestPetsInterval or 14) then
+	local ivEq = cfg().autoEquipBestPetsInterval or 14
+	local tre = AR.HB and AR.HB.state and AR.HB.state.trackedQuest
+	if tre and tre._rankStarSynth == true and tre._rankStarEquipPetGoalIncomplete == true then
+		local rq = tonumber(cfg().rankStarEquipBestIntervalWhenGoal) or 6
+		if rq > 0 then
+			ivEq = math.min(ivEq, rq)
+		end
+	end
+	if now - Ticks.lastAutoEquipBestTick < ivEq then
 		return
 	end
 	if safeIsInInstance() then
@@ -9066,6 +9383,33 @@ function AutoRankRuntimeState.farmDirIdIsMiniChestLike(dir)
 	return string.find(id, "minichest", 1, true) ~= nil
 end
 
+function AutoRankRuntimeState.farmDirIdIsDiamondLike(dir)
+	if type(dir) ~= "table" then
+		return false
+	end
+	local id = dir.id or dir.Id or dir._id or dir.breakableId
+	if type(id) ~= "string" then
+		return false
+	end
+	return string.find(string.lower(id), "diamond", 1, true) ~= nil
+end
+
+function AutoRankRuntimeState.farmByUidRetainDiamondBreakablesOnly(byUid, diag)
+	if type(byUid) ~= "table" then
+		return
+	end
+	local removed = 0
+	for uid, entry in pairs(byUid) do
+		if not AutoRankRuntimeState.farmDirIdIsDiamondLike(entry and entry.dir) then
+			byUid[uid] = nil
+			removed += 1
+		end
+	end
+	if removed > 0 and type(diag) == "table" then
+		diag.rankStarDiamondFilterRemoved = removed
+	end
+end
+
 function AutoRankRuntimeState.farmWantsMiniChestClassMerged()
 	for _, cls in ipairs(AutoRankRuntimeState.farmBreakableClassList()) do
 		if cls == "MiniChest" or cls == "SuperiorMiniChest" then
@@ -9075,11 +9419,12 @@ function AutoRankRuntimeState.farmWantsMiniChestClassMerged()
 	return false
 end
 
-function AutoRankRuntimeState.farmCandidateCacheStore(list, diag)
+function AutoRankRuntimeState.farmCandidateCacheStore(list, diag, diamondOnlyFlag)
 	local fc = AutoRankRuntimeState.farmCandidateCache
 	fc.list = list
 	fc.at = tick()
 	fc.diag = diag
+	fc.diamondOnly = diamondOnlyFlag
 end
 
 function AutoRankRuntimeState.farmDiagNew()
@@ -9345,6 +9690,16 @@ function AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
 				return ma
 			end
 		end
+		if cfg().rankStarPrioritizeDiamondWhenMixedBreakGoals ~= false then
+			local tr = AR.HB.state.trackedQuest
+			if tr and tr._rankStarDiamondBreakablesIncomplete and tr._rankStarNonDiamondBreakablesIncomplete then
+				local da = AutoRankRuntimeState.farmDirIdIsDiamondLike(a.entry and a.entry.dir)
+				local db = AutoRankRuntimeState.farmDirIdIsDiamondLike(b.entry and b.entry.dir)
+				if da ~= db then
+					return da
+				end
+			end
+		end
 		if cfg().preferClosest then
 			return a.d < b.d
 		end
@@ -9374,11 +9729,19 @@ function AutoRankRuntimeState.collectFarmCandidates()
 	local iv = cfg().farmCandidateScanInterval
 	local now = tick()
 	local fc = AutoRankRuntimeState.farmCandidateCache
-	if type(iv) == "number" and iv > 0 and fc.list ~= nil and (now - fc.at) < iv then
-		if fc.diag then
-			AutoRankRuntimeState.diagFarm = fc.diag
+	local trq = AR.HB.state.trackedQuest
+	local di = trq and trq._rankStarDiamondBreakablesIncomplete == true
+	local nd = trq and trq._rankStarNonDiamondBreakablesIncomplete == true
+	local farmAll = cfg().rankStarFarmDiamondBreakablesOnly == false
+		or (di and nd and cfg().rankStarDiamondBreakableExclusiveFilter ~= true)
+	local wantDiamondOnly = di and not farmAll
+	if type(iv) == "number" and iv > 0 and fc.list ~= nil then
+		if fc.diamondOnly == wantDiamondOnly and (now - fc.at) < iv then
+			if fc.diag then
+				AutoRankRuntimeState.diagFarm = fc.diag
+			end
+			return fc.list
 		end
-		return fc.list
 	end
 
 	local diag = AutoRankRuntimeState.farmDiagNew()
@@ -9386,32 +9749,543 @@ function AutoRankRuntimeState.collectFarmCandidates()
 
 	if not BreakableFrontend or not MapCmds then
 		diag.reasonEmpty = "BreakableFrontend_or_MapCmds_nil"
-		AutoRankRuntimeState.farmCandidateCacheStore({}, diag)
+		AutoRankRuntimeState.farmCandidateCacheStore({}, diag, wantDiamondOnly)
 		return {}
 	end
 
 	local pos, zoneId, mult = AutoRankRuntimeState.farmResolveScanOrigin(diag)
 	if not pos then
-		AutoRankRuntimeState.farmCandidateCacheStore({}, diag)
+		AutoRankRuntimeState.farmCandidateCacheStore({}, diag, wantDiamondOnly)
 		return {}
 	end
 
 	local classes = AutoRankRuntimeState.farmBreakableClassList()
 	local byUid = AutoRankRuntimeState.farmMergeBreakableChunks(zoneId, diag.inInstance, classes, diag)
+	if wantDiamondOnly then
+		AutoRankRuntimeState.farmByUidRetainDiamondBreakablesOnly(byUid, diag)
+	end
 	local r = (cfg().farmRadius or 420) * mult
 	diag.radius = r
 	local nRe = AutoRankRuntimeState.farmMergeRandomEventBreakableUids(zoneId, diag.inInstance, pos, r, byUid, diag)
 	if nRe > 0 then
 		diag.rawTotal += nRe
 	end
+	if wantDiamondOnly then
+		AutoRankRuntimeState.farmByUidRetainDiamondBreakablesOnly(byUid, diag)
+	end
 	local nMc = AutoRankRuntimeState.farmMergeMiniChestWorkspaceUidScan(zoneId, diag.inInstance, pos, r, byUid, diag)
 	if nMc > 0 then
 		diag.rawTotal += nMc
 	end
+	if wantDiamondOnly then
+		AutoRankRuntimeState.farmByUidRetainDiamondBreakablesOnly(byUid, diag)
+	end
 	local out = AutoRankRuntimeState.farmListInRadius(byUid, pos, r, diag)
+	diag.rankStarDiamondOnlyFarm = wantDiamondOnly or nil
 	AutoRankRuntimeState.farmFinalizeEmptyListDiag(diag, r, out)
-	AutoRankRuntimeState.farmCandidateCacheStore(out, diag)
+	AutoRankRuntimeState.farmCandidateCacheStore(out, diag, wantDiamondOnly)
 	return out
+end
+
+function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
+	if cfg().rankStarAutoMachines == false then
+		return
+	end
+	local hbIv = tonumber(cfg().rankStarMachineHbInterval) or 2.75
+	if hbIv > 0 then
+		local now0 = tick()
+		if now0 - (Ticks.lastRankStarMachineHbTick or 0) < hbIv then
+			return
+		end
+		Ticks.lastRankStarMachineHbTick = now0
+	end
+	if not tracked or tracked._rankStarSynth ~= true then
+		return
+	end
+	local wantR = tracked._rankStarRainbowMachineIncomplete == true
+	local wantG = tracked._rankStarGoldMachineIncomplete == true
+	if not wantR and not wantG then
+		return
+	end
+	local okInSt, inside = safeIsInInstance()
+	if okInSt and inside then
+		return
+	end
+	if hatchSequenceBlocksWorldTeleport() or hatchAsyncPipelineActive() then
+		return
+	end
+	if not Network or type(AR.Net.invoke) ~= "function" then
+		return
+	end
+	if not ItemsLib or type(ItemsLib.Pet) ~= "table" or type(ItemsLib.Pet.Get) ~= "function" then
+		return
+	end
+	local s = Save and Save.Get and Save.Get()
+	if not s or type(s.Inventory) ~= "table" or type(s.Inventory.Pet) ~= "table" then
+		return
+	end
+	local ch = LocalPlayer.Character
+	local pp = ch and ch.PrimaryPart
+	if not pp then
+		return
+	end
+	local skipEq = cfg().rankStarMachineSkipEquippedPets ~= false
+	local function perkBatch(perkName)
+		local red = 0
+		if MasteryCmds and type(MasteryCmds.HasPerk) == "function" and type(MasteryCmds.GetPerkPower) == "function"
+			and MasteryCmds.HasPerk("Pets", perkName) then
+			red = tonumber(MasteryCmds.GetPerkPower("Pets", perkName)) or 0
+		end
+		return math.max(1, 10 - math.floor(red + 1e-6))
+	end
+	local function fflagOk(ffKeyName)
+		if not FFlags or type(FFlags.Get) ~= "function" or not FFlags.Keys then
+			return false
+		end
+		local k = FFlags.Keys[ffKeyName]
+		if not k then
+			return false
+		end
+		local okFf = false
+		pcall(function()
+			okFf = FFlags.Get(k) == true
+		end)
+		if okFf then
+			return true
+		end
+		local bypass = false
+		pcall(function()
+			bypass = FFlags.CanBypass and FFlags.CanBypass() == true
+		end)
+		return bypass == true
+	end
+	local function pivotMachine(machShort)
+		if not cfg().pivotBeforeRemotePurchases then
+			return true
+		end
+		if not MachineCmds or type(MachineCmds.GetClosestMachine) ~= "function" then
+			return false
+		end
+		local radius = cfg().machineSearchRadius or 2500
+		local yOff = cfg().machineTeleportYOffset or 6
+		local entry = nil
+		pcall(function()
+			entry = MachineCmds.GetClosestMachine(machShort, pp.Position, radius)
+		end)
+		if not entry or not entry.Model then
+			return false
+		end
+		local pivotPart = entry.Model.PrimaryPart or entry.Model:FindFirstChildWhichIsA("BasePart", true)
+		if not pivotPart then
+			return false
+		end
+		local prox = (cfg().hatchEggProximity or 36) + 12
+		if (pp.Position - pivotPart.Position).Magnitude <= prox then
+			return true
+		end
+		return pivotCharacterToCFrame(pivotPart.CFrame * CFrame.new(0, yOff, 0))
+	end
+	local function tryOne(kind)
+		local remoteName = kind == "rainbow" and "RainbowMachine_Activate" or "GoldMachine_Activate"
+		local machName = kind == "rainbow" and "RainbowMachine" or "GoldMachine"
+		local perkNm = kind == "rainbow" and "RainbowReduction" or "GoldReduction"
+		local candField = kind == "rainbow" and "CanRainbowMachine" or "CanGoldMachine"
+		if not fflagOk(machName) then
+			return false
+		end
+		if MachineCmds and type(MachineCmds.CanUse) == "function" then
+			local cu = false
+			pcall(function()
+				cu = MachineCmds.CanUse(machName) == true
+			end)
+			if not cu then
+				return false
+			end
+		end
+		pivotMachine(machName)
+		local perBatch = perkBatch(perkNm)
+		local bestPet, bestBatch = nil, 0
+		for uid, pdata in pairs(s.Inventory.Pet) do
+			if type(pdata) == "table" and not pdata._lk then
+				if not skipEq or not petUidIsCurrentlyEquipped(s, uid) then
+					local petObj = nil
+					pcall(function()
+						petObj = ItemsLib.Pet:Get(uid)
+					end)
+					if petObj then
+						local amt = 0
+						pcall(function()
+							amt = tonumber(petObj:GetAmount()) or 0
+						end)
+						if amt >= perBatch then
+							local okM = false
+							local fn = petObj[candField]
+							pcall(function()
+								if type(fn) == "function" then
+									okM = fn(petObj) == true
+								end
+							end)
+							if okM then
+								local batches = math.floor(amt / perBatch)
+								if batches > bestBatch then
+									bestBatch = batches
+									bestPet = petObj
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		if not bestPet or bestBatch < 1 then
+			return false
+		end
+		local petUidInvoke = nil
+		pcall(function()
+			petUidInvoke = bestPet:GetUID()
+		end)
+		if type(petUidInvoke) ~= "string" then
+			return false
+		end
+		local okIv, okRes = pcall(function()
+			return AR.Net.invoke(remoteName, petUidInvoke, bestBatch)
+		end)
+		if okIv and okRes then
+			log("RankStars machine", remoteName, petUidInvoke, bestBatch)
+			pcall(function()
+				if MachineCmds and type(MachineCmds.PreventOpen) == "function" then
+					MachineCmds.PreventOpen(machName)
+					MachineCmds.PreventOpen("SuperMachine")
+				end
+			end)
+			return true
+		end
+		return false
+	end
+	if wantR and tryOne("rainbow") then
+		return
+	end
+	if wantG then
+		tryOne("gold")
+	end
+end
+
+function AutoRankRuntimeState.tryRankStarFusePulse(tracked)
+	if cfg().rankStarAutoFuse == false then
+		return
+	end
+	local hbIv = tonumber(cfg().rankStarFuseHbInterval) or 4
+	if hbIv > 0 then
+		local t0 = tick()
+		if t0 - (Ticks.lastRankStarFuseHbTick or 0) < hbIv then
+			return
+		end
+	end
+	if not tracked or tracked._rankStarSynth ~= true or tracked._rankStarFuseIncomplete ~= true then
+		return
+	end
+	local okInSt, inside = safeIsInInstance()
+	if okInSt and inside then
+		return
+	end
+	if hatchSequenceBlocksWorldTeleport() or hatchAsyncPipelineActive() then
+		return
+	end
+	if not Network or type(AR.Net.invoke) ~= "function" then
+		return
+	end
+	local fu = FuseUtil
+	if not fu then
+		pcall(function()
+			FuseUtil = FuseUtil or cacheReq(ReplicatedStorage.Library.Util:WaitForChild("FuseUtil"))
+			fu = FuseUtil
+		end)
+	end
+	if not fu or type(fu.config) ~= "table" then
+		return
+	end
+	local minNeed = tonumber(fu.config.MinimumSelectedPets)
+	if not minNeed or minNeed < 1 then
+		minNeed = tonumber(fu.config.MinimumSampleSize) or 8
+	end
+	if MasteryCmds and type(MasteryCmds.HasPerk) == "function" and MasteryCmds.HasPerk("Fuse", "FuseLessPetsNeeded") then
+		minNeed = math.min(minNeed, 2)
+	end
+	local maxNeed = tonumber(fu.config.MaximumSelectedPets) or 100
+	if maxNeed < minNeed then
+		maxNeed = minNeed
+	end
+	if not ItemsLib or type(ItemsLib.Pet.Get) ~= "function" then
+		return
+	end
+	local s = Save and Save.Get and Save.Get()
+	local pets = s and s.Inventory and s.Inventory.Pet
+	if not pets then
+		return
+	end
+	local ch = LocalPlayer.Character
+	local pp = ch and ch.PrimaryPart
+	if not pp then
+		return
+	end
+	local skipEq = cfg().rankStarFuseSkipEquippedPets ~= false
+	if FFlags and FFlags.Keys and FFlags.Keys.FuseMachine and type(FFlags.Get) == "function" then
+		local okf = false
+		pcall(function()
+			okf = FFlags.Get(FFlags.Keys.FuseMachine) == true
+		end)
+		if not okf then
+			local byp = false
+			pcall(function()
+				byp = FFlags.CanBypass and FFlags.CanBypass() == true
+			end)
+			if not byp then
+				return
+			end
+		end
+	end
+	if MachineCmds and type(MachineCmds.CanUse) == "function" then
+		local cu = false
+		pcall(function()
+			cu = MachineCmds.CanUse("FuseMachine") == true
+		end)
+		if not cu then
+			return
+		end
+	end
+	if cfg().pivotBeforeRemotePurchases and MachineCmds and type(MachineCmds.GetClosestMachine) == "function" then
+		local entry = nil
+		local radius = cfg().machineSearchRadius or 2500
+		local yOff = cfg().machineTeleportYOffset or 6
+		pcall(function()
+			entry = MachineCmds.GetClosestMachine("FuseMachine", pp.Position, radius)
+		end)
+		local pivotPart = entry and entry.Model
+			and (entry.Model.PrimaryPart or entry.Model:FindFirstChildWhichIsA("BasePart", true))
+		if pivotPart then
+			local prox = (cfg().hatchEggProximity or 36) + 12
+			if (pp.Position - pivotPart.Position).Magnitude > prox then
+				pivotCharacterToCFrame(pivotPart.CFrame * CFrame.new(0, yOff, 0))
+			end
+		end
+	end
+	local groups = {}
+	for uid, data in pairs(pets) do
+		if type(uid) == "string" and type(data) == "table" and not data._lk then
+			if not skipEq or not petUidIsCurrentlyEquipped(s, uid) then
+				local pobj = nil
+				pcall(function()
+					pobj = ItemsLib.Pet:Get(uid)
+				end)
+				if pobj then
+					local okFuse = false
+					pcall(function()
+						okFuse = type(pobj.CanFuseMachine) == "function" and pobj:CanFuseMachine() == true
+					end)
+					if okFuse then
+						local pid = data.id
+						if type(pid) ~= "string" then
+							pcall(function()
+								pid = pobj:GetId()
+							end)
+						end
+						pid = tostring(pid or "?")
+						local amt = 1
+						pcall(function()
+							amt = tonumber(pobj:GetAmount()) or 1
+						end)
+						local L = groups[pid]
+						if not L then
+							L = {}
+							groups[pid] = L
+						end
+						table.insert(L, { uid = uid, amt = amt })
+					end
+				end
+			end
+		end
+	end
+	local bestList, bestSum = nil, 0
+	for _, lst in pairs(groups) do
+		local sm = 0
+		for _, e in ipairs(lst) do
+			sm += e.amt
+		end
+		if sm >= minNeed and sm > bestSum then
+			bestSum = sm
+			bestList = lst
+		end
+	end
+	if not bestList then
+		return
+	end
+	local outMap = {}
+	local sum = 0
+	for _, e in ipairs(bestList) do
+		local room = maxNeed - sum
+		if room < 1 then
+			break
+		end
+		local take = math.min(e.amt, room)
+		if take >= 1 then
+			outMap[e.uid] = take
+			sum += take
+		end
+		if sum >= maxNeed then
+			break
+		end
+	end
+	if sum < minNeed then
+		return
+	end
+	Ticks.lastRankStarFuseHbTick = tick()
+	local okIv, r1 = pcall(function()
+		return AR.Net.invoke("FuseMachine_Activate", outMap)
+	end)
+	if okIv and r1 then
+		log("RankStars FuseMachine_Activate count=", sum)
+		pcall(function()
+			if MachineCmds and type(MachineCmds.PreventOpen) == "function" then
+				MachineCmds.PreventOpen("FuseMachine")
+				MachineCmds.PreventOpen("SuperMachine")
+			end
+		end)
+	end
+end
+
+--[[ SecretKey/CrystalKey/PrisonKey combine и Crystal/Hacker chest unlock по Save.Goals (55,56,78,85); один Invoke за тик. ]]
+function AutoRankRuntimeState.tryRankStarKeyPulse(tracked)
+	if cfg().rankStarAutoKeys == false then
+		return
+	end
+	local hbIv = tonumber(cfg().rankStarKeyHbInterval) or 4
+	if hbIv > 0 then
+		local now0 = tick()
+		if now0 - (Ticks.lastRankStarKeyHbTick or 0) < hbIv then
+			return
+		end
+		Ticks.lastRankStarKeyHbTick = now0
+	end
+	if not tracked or tracked._rankStarSynth ~= true then
+		return
+	end
+	local needSecret = tracked._rankStarKeySecretCombine == true
+	local needCrystalC = tracked._rankStarKeyCrystalCombine == true
+	local needCrystalUnlock = tracked._rankStarKeyCrystalChest == true
+	local needPrison = tracked._rankStarKeyPrisonCombine == true
+	local needHacker = tracked._rankStarKeyHackerChest == true
+	if not needSecret and not needCrystalC and not needCrystalUnlock and not needPrison and not needHacker then
+		return
+	end
+	local okInSt, inside = safeIsInInstance()
+	if okInSt and inside then
+		return
+	end
+	if hatchSequenceBlocksWorldTeleport() or hatchAsyncPipelineActive() then
+		return
+	end
+	if not Network or type(AR.Net.invoke) ~= "function" then
+		return
+	end
+	local maxChestD = tonumber(cfg().rankStarKeyChestMaxStuds) or 56
+
+	local function fflagChest(keyName)
+		if not FFlags or type(FFlags.Get) ~= "function" or not FFlags.Keys then
+			return false
+		end
+		local k = FFlags.Keys[keyName]
+		if not k then
+			return false
+		end
+		local on = false
+		pcall(function()
+			on = FFlags.Get(k) == true
+		end)
+		if on then
+			return true
+		end
+		local bypass = false
+		pcall(function()
+			bypass = FFlags.CanBypass and FFlags.CanBypass() == true
+		end)
+		return bypass == true
+	end
+
+	local function nearestPivotDist(tag)
+		local ch = LocalPlayer.Character
+		local pp = ch and ch.PrimaryPart
+		if not pp then
+			return nil
+		end
+		local best = nil
+		local okLt, lst = pcall(function()
+			return CollectionService:GetTagged(tag)
+		end)
+		if not okLt or type(lst) ~= "table" then
+			return nil
+		end
+		for _, inst in pairs(lst) do
+			if inst and inst.Parent and typeof(inst) == "Instance" then
+				local piv = nil
+				pcall(function()
+					piv = inst:GetPivot()
+				end)
+				if piv then
+					local d = (piv.Position - pp.Position).Magnitude
+					if not best or d < best then
+						best = d
+					end
+				end
+			end
+		end
+		return best
+	end
+
+	local function tryInvoke(remote, a1)
+		local okIv, r1 = pcall(function()
+			return AR.Net.invoke(remote, a1)
+		end)
+		if okIv and r1 then
+			log("RankStars", remote, a1)
+			return true
+		end
+		return false
+	end
+
+	if needHacker and fflagChest("HackerChest") then
+		local d = nearestPivotDist("Hacker Chest")
+		if d and d <= maxChestD then
+			if tryInvoke("HackerKey_Unlock", 1) then
+				return
+			end
+		end
+	end
+
+	if needCrystalUnlock and fflagChest("CrystalChest") then
+		local castleOk = false
+		pcall(function()
+			local sv = Save and Save.Get and Save.Get()
+			castleOk = sv and sv.CastleUnlocked == true
+		end)
+		if castleOk then
+			local d = nearestPivotDist("Crystal Chest")
+			if d and d <= maxChestD then
+				if tryInvoke("CrystalKey_Unlock", 1) then
+					return
+				end
+			end
+		end
+	end
+
+	if needSecret and tryInvoke("SecretKey_Combine", 1) then
+		return
+	end
+	if needCrystalC and tryInvoke("CrystalKey_Combine", 1) then
+		return
+	end
+	if needPrison and tryInvoke("PrisonKey_Combine", 1) then
+		return
+	end
 end
 
 function AutoRankRuntimeState.tryAutoEnableAutoFarm()
@@ -10739,6 +11613,21 @@ AR.HB.tasks = {
 	{ tag = "rankUpGui", interval = 0.5, fn = function() AutoRankRuntimeState.tryRankUpViaGui() end },
 	{ tag = "buyEggSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEggSlots() end },
 	{ tag = "buyEquipSlots", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyEquipSlots() end },
+	{ tag = "rankStarMachines", interval = "rankStarMachineHbInterval", fn = function()
+		pcall(function()
+			AutoRankRuntimeState.tryRankStarMachinePulse(AR.HB.state.trackedQuest)
+		end)
+	end },
+	{ tag = "rankStarFuse", interval = "rankStarFuseHbInterval", fn = function()
+		pcall(function()
+			AutoRankRuntimeState.tryRankStarFusePulse(AR.HB.state.trackedQuest)
+		end)
+	end },
+	{ tag = "rankStarKeys", interval = "rankStarKeyHbInterval", fn = function()
+		pcall(function()
+			AutoRankRuntimeState.tryRankStarKeyPulse(AR.HB.state.trackedQuest)
+		end)
+	end },
 	{ tag = "buyUpgrade", interval = "hbIntervalAutoBuy", fn = function() tryAutoBuyCheapestUpgrade() end },
 	{ tag = "minigame", interval = "hbIntervalQuestAssist", fn = function() AutoRankRuntimeState.tryMinigameAssistPulse() end },
 	{ tag = "questAssist", interval = "hbIntervalQuestAssist", fn = function()

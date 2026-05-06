@@ -130,6 +130,30 @@ return {
 	questAssistInterval = 0.65,
 	-- После Rebirth>=1 колбэки GoalCmds (Eggs/Zone/Use Potion/…) возвращают nil — активная цель как в GUIs.Ranks: Save + Directory.Ranks[..].Rewards.
 	questRankStarSynthFromSave = true,
+	--[[ Неполный DIAMOND_BREAKABLE в Save.Goals по активному слоту: фокус только breakables с directory id ~= *diamond* (как VIP diamond в клиенте). ]]
+	rankStarFarmDiamondBreakablesOnly = true,
+	--[[ GoldMachine_Activate / RainbowMachine_Activate по Save.Goals GOLD_PET,BEST_GOLD_PET / RAINBOW_PET,BEST_RAINBOW_PET. ]]
+	rankStarAutoMachines = true,
+	rankStarMachineHbInterval = 2.75,
+	rankStarMachineSkipEquippedPets = true,
+	--[[ Только алмазные breakables: если false и в слоте одновременно обычные break/миникороба — не сужать карту, только сортировка (rankStarPrioritizeDiamondWhenMixedBreakGoals). ]]
+	rankStarDiamondBreakableExclusiveFilter = false,
+	rankStarPrioritizeDiamondWhenMixedBreakGoals = true,
+	--[[ Покупка зон / instance зон чаще при незакрытых Rank ZONE / CURRENCY / MAP / OBTAIN_CURRENCY. ]]
+	rankStarZonePurchaseIntervalMultiplier = 0.35,
+	rankStarUseFruitConsumeInterval = 0.55,
+	rankStarPlaceFlagIntervalWhenGoal = 0.85,
+	rankStarEquipBestIntervalWhenGoal = 6,
+	rankStarAutoFuse = true,
+	rankStarFuseHbInterval = 4,
+	rankStarFuseSkipEquippedPets = true,
+	--[[ Комбайн половинок ключей / unlock Crystal & Hacker chest рядом (Goals 55,56 + chest; 78 PrisonKey_Combine; 85 hacker chest). ]]
+	rankStarAutoKeys = true,
+	rankStarKeyHbInterval = 4,
+	rankStarKeyChestMaxStuds = 56,
+	--[[ Enchant loadout при ранк-цели collect/misc/ключи: «Treasure Hunter» вперёд локальной копией списка. ]]
+	rankStarLootGoalsBoostTreasureHunter = true,
+	rankStarTreasureHunterEnchantName = "Treasure Hunter",
 	-- Не опрашивать GoalCmds: только ранговые звёздные квесты (синтез выше) + общий фарм/вылуп/клейм наград.
 	questOnlyRankStarObjectives = true,
 	questTeleportToTarget = true,
