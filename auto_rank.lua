@@ -3416,7 +3416,8 @@ end
 
 local QuestAssist = {}
 
-function QuestAssist.flattenObjectiveText(tracked)
+function QuestAssist.flattenObjectiveText(tracked, opts)
+	opts = type(opts) == "table" and opts or {}
 	if not tracked then
 		return ""
 	end
@@ -3439,13 +3440,25 @@ function QuestAssist.flattenObjectiveText(tracked)
 			end
 		end
 	end
-	if tracked._rankStarSynth == true or tracked._rankGuiSynth == true then
+	if opts.omitRankGoalsGuiAppend ~= true and (tracked._rankStarSynth == true or tracked._rankGuiSynth == true) then
 		local guiBlob = QuestAssist.rankGoalsGuiBlobLower()
 		if guiBlob ~= "" then
 			table.insert(parts, guiBlob)
 		end
 	end
 	return table.concat(parts, " ")
+end
+
+--[[ Для RankStars_* / RankGuiSynth: scrape GUIs.Ranks тащит ВСЕ подцели (в т.ч. уже закрытые hatch),
+	из‑за чего pick egg / «есть ли цель на яйцо» ломаются. Яйцевая логика смотрит только на заголовок слота + gen. ]]
+function QuestAssist.flattenObjectiveSansRankGoalsGui(tracked)
+	if not tracked then
+		return ""
+	end
+	if tracked._rankStarSynth == true or tracked._rankGuiSynth == true then
+		return QuestAssist.flattenObjectiveText(tracked, { omitRankGoalsGuiAppend = true })
+	end
+	return QuestAssist.flattenObjectiveText(tracked)
 end
 
 function QuestAssist.objectiveTextLower(tracked)
@@ -4204,7 +4217,7 @@ function QuestAssist.objectiveMentionsEggOrHatch(tracked)
 	if not tracked then
 		return false
 	end
-	local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
+	local blob = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
 	return string.find(blob, "hatch", 1, true) ~= nil or string.find(blob, "egg", 1, true) ~= nil
 end
 
@@ -6756,7 +6769,7 @@ do
 		if not tracked or not EggsUtil or not EggCmds then
 			return nil
 		end
-		local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
+		local blob = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
 		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
 			return nil
 		end
@@ -7440,7 +7453,7 @@ AR.ARC = (function()
 			return true
 		end
 		local blob = string.lower(
-			QuestAssist.flattenObjectiveText(tracked) .. " " .. tostring(tracked and tracked._generatorName or "")
+			QuestAssist.flattenObjectiveSansRankGoalsGui(tracked) .. " " .. tostring(tracked and tracked._generatorName or "")
 		)
 		for _, kw in ipairs(cfg().infinityEggQuestKeywords or {}) do
 			if type(kw) == "string" and kw ~= "" and string.find(blob, string.lower(kw), 1, true) then
@@ -8051,7 +8064,7 @@ AR.ARC = (function()
 			hatchSkipDiag("gui_non_egg_goal_blocks_progress")
 			return
 		end
-		local blobGate = string.lower(QuestAssist.flattenObjectiveText(tracked))
+		local blobGate = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
 		if not string.find(blobGate, "hatch", 1, true) and not string.find(blobGate, "egg", 1, true) then
 			hatchSkipDiag("gui_non_egg_goal_blocks_hatch", gen)
 			return
@@ -8062,7 +8075,7 @@ AR.ARC = (function()
 		return
 	end
 	if not cfg().questAutoHatchAnytime and not progressOnly then
-		local blob = string.lower(QuestAssist.flattenObjectiveText(tracked))
+		local blob = string.lower(QuestAssist.flattenObjectiveSansRankGoalsGui(tracked))
 		if not string.find(blob, "hatch", 1, true) and not string.find(blob, "egg", 1, true) then
 			hatchSkipDiag("objective_not_egg_hatch", gen)
 			return
