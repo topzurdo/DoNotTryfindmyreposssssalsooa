@@ -2339,6 +2339,52 @@ end
 local crossPlaceQueueRegistered = false
 local samePlaceLastJobIdByPlace = {}
 
+local function readLocalPlayerTeleportData()
+	local td = nil
+	local ok = pcall(function()
+		td = TeleportService:GetLocalPlayerTeleportData()
+	end)
+	return ok, td
+end
+
+local function migrationHttpReloadAlreadyScheduledInGenv()
+	local G = (getgenv and getgenv()) or _G
+	local ar = G.AutoRank
+	return type(ar) == "table" and ar._arMigrationHttpReloadScheduled == true
+end
+
+local function tryScheduleMigrationTeleportDataReload(why)
+	if cfg().migrationTeleportDataAutoReload == false then
+		return
+	end
+	local ok, td = readLocalPlayerTeleportData()
+	local hasMig = ok and type(td) == "table" and td.WasMigrated == true
+	local G = (getgenv and getgenv()) or _G
+	G.AutoRank = G.AutoRank or {}
+	local ar = G.AutoRank
+	if not hasMig then
+		ar._arMigrationHttpReloadScheduled = false
+		return
+	end
+	if ar._arMigrationHttpReloadScheduled == true then
+		return
+	end
+	local snippet = buildAutoRankReloadSnippet()
+	if not snippet then
+		traceThrottled("migration_reload_no_url", 30, "migration_reload", "нужен crossPlaceReloadUrl (https)")
+		return
+	end
+	ar._arMigrationHttpReloadScheduled = true
+	trace("migration_reload", "TeleportData.WasMigrated=true — перезапуск скрипта", "why=", why)
+	local okLd, errLd = pcall(function()
+		loadstring(snippet)()
+	end)
+	if not okLd then
+		ar._arMigrationHttpReloadScheduled = false
+		trace("migration_reload", "loadstring(schedule) failed", errLd)
+	end
+end
+
 local function buildAutoRankReloadSnippet()
 	local url = cfg().crossPlaceReloadUrl
 	local delay = tonumber(cfg().crossPlaceReloadDelaySec) or 3
@@ -2360,6 +2406,9 @@ local lastSamePlaceJobPollTick = 0
 
 local function tryScheduleSamePlaceRejoinScriptReload()
 	if cfg().samePlaceRejoinAutoReload ~= true then
+		return
+	end
+	if migrationHttpReloadAlreadyScheduledInGenv() then
 		return
 	end
 	local pollIv = tonumber(cfg().samePlaceRejoinReloadIntervalSec) or 2
@@ -10677,7 +10726,10 @@ AR.HB.tasks = {
 	{ tag = "netDebugHook", interval = 1.0, fn = function() tryInstallNetworkInvokeDebugHook() end },
 	{ tag = "kickGuard", interval = 1.0, fn = function() tryInstallKickGuard() end },
 	{ tag = "samePlaceRejoinReload", interval = 0.5, fn = function()
-		pcall(tryScheduleSamePlaceRejoinScriptReload)
+		pcall(function()
+			tryScheduleMigrationTeleportDataReload("hb")
+			tryScheduleSamePlaceRejoinScriptReload()
+		end)
 	end },
 	{ tag = "orbMagnet", interval = 0.5, fn = function() patchOrbMagnet() end },
 	{ tag = "orbNetHook", interval = 0.5, fn = function() hookOrbNetwork() end },
@@ -10739,6 +10791,19 @@ end
 
 task.defer(function()
 	pcall(tryRegisterCrossPlaceScriptReload)
+end)
+task.defer(function()
+	if cfg().windowFocusFlushReconnectReloadPoll == false then
+		return
+	end
+	local UIS = game:GetService("UserInputService")
+	UIS.WindowFocused:Connect(function()
+		lastSamePlaceJobPollTick = 0
+		pcall(function()
+			tryScheduleMigrationTeleportDataReload("window_focus")
+			tryScheduleSamePlaceRejoinScriptReload()
+		end)
+	end)
 end)
 
 AutoRankRuntimeState.heartbeatConn = RunService.Heartbeat:Connect(function()

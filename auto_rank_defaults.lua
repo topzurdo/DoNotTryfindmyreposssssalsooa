@@ -111,6 +111,10 @@ return {
 	-- После kick / soft rejoin в тот же PlaceId JobId меняется, а queue_on_teleport может не вызваться — поднимаем свежий loadstring тем же URL.
 	samePlaceRejoinAutoReload = true,
 	samePlaceRejoinReloadIntervalSec = 2,
+	-- PS99 MigrationCmds: при rejoin/migrate в тот же сервер JobId часто тот же, зато в teleport data есть WasMigrated — один loadstring-перезапуск (тот же crossPlaceReloadUrl).
+	migrationTeleportDataAutoReload = true,
+	-- После разморозки окна (Roblox без фокуса почти не крутит RenderStepped — миграция Save.Load зависает) сразу перепроверить JobId/migration.
+	windowFocusFlushReconnectReloadPoll = true,
 	teleportToBreakableFarmCenter = true,
 	farmBreakablePullInterval = 1.15,
 	farmBreakableMinDist = 20,
