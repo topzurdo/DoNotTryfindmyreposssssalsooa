@@ -6611,9 +6611,14 @@ do
 			for _, key in ipairs({ "zone", "Zone", "world", "World", "area", "Area" }) do
 				local v = dir[key]
 				if type(v) == "string" and v ~= "" then
-					return AR.QuestWorldHelpers.normalizeZoneIdCandidate(v)
+					local z = AR.QuestWorldHelpers.normalizeZoneIdCandidate(v)
+					traceThrottled("egg_zone_dir_" .. tostring(n), 60, "hatch", "egg", n, "zone via dir["..key.."]=", v, "->", z)
+					return z
 				end
 			end
+			traceThrottled("egg_zone_dir_miss_" .. tostring(n), 60, "hatch", "egg", n, "no zone key in dir, id=", tostring(dir._id))
+		else
+			traceThrottled("egg_zone_no_dir_" .. tostring(n), 60, "hatch", "egg", n, "no part and no dir entry")
 		end
 		return nil
 	end
@@ -7176,19 +7181,15 @@ AR.ARC = (function()
 			return 0
 		end
 		local hi = 0
+		local hiAvail = 0
 		pcall(function()
-			hi = EggCmds.GetHighestEggNumberAvailable() or 0
-		end)
-		if hi <= 0 then
-			pcall(function()
-				if EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" then
-					hi = EggsUtil.GetMaximumEggNumber() or 0
-				end
-			end)
-			if hi > 0 then
-				traceThrottled("hatch_zone_fallback_max_egg_num", 60, "hatch", "pickHighestEggInPhysicalZone: GetHighestEggNumberAvailable=0, fallback=", hi)
+			if EggsUtil and type(EggsUtil.GetMaximumEggNumber) == "function" then
+				hi = EggsUtil.GetMaximumEggNumber() or 0
 			end
-		end
+		end)
+		pcall(function() hiAvail = EggCmds.GetHighestEggNumberAvailable() or 0 end)
+		if hi <= 0 then hi = hiAvail end
+		traceThrottled("hatch_zone_hi", 15, "hatch", "pickHighestEggInPhysicalZone zone=", zoneId, "maxNum=", hi, "avail=", hiAvail)
 		if hi <= 0 then
 			return 0
 		end
@@ -7267,8 +7268,15 @@ AR.ARC = (function()
 		local globalBestId = nil
 		if EggsUtil and EggCmds then
 			local hi2 = 0
-			pcall(function() hi2 = EggCmds.GetHighestEggNumberAvailable() or 0 end)
-			if hi2 <= 0 then pcall(function() hi2 = EggsUtil.GetMaximumEggNumber() or 0 end) end
+			local hi2Avail = 0
+			pcall(function()
+				if type(EggsUtil.GetMaximumEggNumber) == "function" then
+					hi2 = EggsUtil.GetMaximumEggNumber() or 0
+				end
+			end)
+			pcall(function() hi2Avail = EggCmds.GetHighestEggNumberAvailable() or 0 end)
+			if hi2 <= 0 then hi2 = hi2Avail end
+			traceThrottled("hatch_global_hi", 15, "hatch", "globalBest scan: maxNum=", hi2, "avail=", hi2Avail)
 			local allowInf = HatchAssist.infinityAllowed(tracked)
 			local n = hi2
 			while n > 0 do
