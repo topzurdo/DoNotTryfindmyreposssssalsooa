@@ -1220,7 +1220,8 @@ local AutoRankRuntimeState = {
 	lastTutorialArrowTick = 0,
 }
 
-local function autoRankDisconnectAll()
+local ConnU = {}
+function ConnU.disconnectAll()
 	for _, c in ipairs(AutoRankRuntimeState.connections) do
 		pcall(function()
 			if c and c.Disconnect then
