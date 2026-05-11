@@ -76,6 +76,11 @@ return {
 	hatchBusyEarlyReleaseMinDelay = 0.55,
 	hatchBusyEarlyReleaseMaxWait = 24,
 	hatchBusyEarlyReleasePoll = 0.22,
+	stuckWatchdogEnabled = true,
+	stuckWatchdogIntervalSec = 4,
+	stuckWatchdogTimeoutSec = 42,
+	stuckWatchdogMinActionGapSec = 18,
+	stuckWatchdogHatchBackoffSec = 35,
 	preferZoneEggWhenProgress = true,
 	-- "your best eggs": не падать на глобальный номер яйца (#127 в другом мире); при true — старый fallback pickEggNumber().
 	hatchBestEggsFallbackGlobalPick = false,

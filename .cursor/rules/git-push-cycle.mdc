@@ -1,0 +1,10 @@
+---
+description: Commit and push completed project change cycles
+alwaysApply: true
+---
+
+# Git Push Cycle
+
+- After finishing a requested code-change cycle in this project, commit and push the relevant files to the current branch unless the user explicitly says not to.
+- Keep commits scoped: do not include unrelated dirty files, untracked folders, local logs, credentials, or user changes outside the requested work.
+- Before committing, inspect `git status`, `git diff`, and recent commits; after pushing, report the commit hash and mention any unrelated files left untouched.

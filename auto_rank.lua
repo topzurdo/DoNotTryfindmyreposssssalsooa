@@ -8,7 +8,7 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local autoRankLoadTick = tick()
 -- Скрипт-версия (должна быть объявлена до AR.Log.resetFile).
-local AUTO_RANK_RUNTIME_VERSION = 27
+local AUTO_RANK_RUNTIME_VERSION = 28
 
 --[[ NAV: defaults HttpGet | embedded world profiles | Net/log | ARQ | hatch | Farm | HB.tasks ]]
 
@@ -53,7 +53,7 @@ AR.Log.pcallWrap3 = PcallWrap.wrap3
 AR.Log.pcallWrap4 = PcallWrap.wrap4
 
 -- Defaults loader: remote only via HttpGet. Override URL with getgenv().AutoRankDefaultsUrl.
-local AUTO_RANK_DEFAULTS_URL_FALLBACK = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank_defaults.lua"
+local AUTO_RANK_DEFAULTS_URL_FALLBACK = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/cursor/add-pet-rng-auto-script/auto_rank_defaults.lua"
 
 local INTERNAL_DEFAULTS = (function()
 	local g0 = (getgenv and getgenv()) or _G
@@ -404,6 +404,7 @@ local AutoRankEmbeddedWorldProfiles = {
 
 local Ticks = {}
 Ticks.lastVerbosePulseTick = 0
+Ticks.lastStuckWatchdogTick = 0
 -- True между SetupEgg/SetupCustomEgg и возвратом из AttemptHatch (async hatch assist), чтобы hatchBusyEarlyRelease не снимал guard в паузу extraDelayBeforeAttemptHatchSec.
 Ticks.hatchEggPipelineInFlight = false
 Ticks.lastRankStarMachineHbTick = 0
@@ -1133,6 +1134,7 @@ Ticks.lastConsFailPruneTick = 0
 Ticks.progressOnlyHatchDisabledAt = 0
 Ticks.hatchAsyncGuardUntil = 0
 Ticks.hatchEggPipelineStartedAt = 0
+Ticks.stuckHatchBackoffUntil = 0
 Ticks.hb = {}
 local hatchBusy = false
 local hatchBusyArmedAt = 0
@@ -1337,6 +1339,7 @@ function ConnU.disconnectAll()
 	Ticks.hatchEggPipelineInFlight = false
 	Ticks.hatchEggPipelineStartedAt = 0
 	Ticks.hatchAsyncGuardUntil = 0
+	Ticks.stuckHatchBackoffUntil = 0
 	hatchBusyToken += 1
 end
 
@@ -8606,6 +8609,11 @@ AR.ARC = (function()
 	if deferSec > 0 and tick() - autoRankLoadTick < deferSec then
 		return
 	end
+	local stuckBackoff = tonumber(Ticks.stuckHatchBackoffUntil) or 0
+	if stuckBackoff > tick() then
+		hatchSkipDiag("stuck_watchdog_backoff", string.format("%.1fs", stuckBackoff - tick()))
+		return
+	end
 	if not cfg().questAutoHatch or not HatchingCmds or not EggCmds or not HatchingTypes or not EggsUtil then
 		hatchSkipDiag("modules_missing")
 		return
@@ -10938,6 +10946,89 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 	end
 end
 
+function AutoRankRuntimeState.stuckWatchdogQuestSnippet(dq)
+	local s = tostring((type(dq) == "table" and (dq.snippet or dq.detail)) or "")
+	s = string.gsub(s, "%s+", " ")
+	if #s > 180 then
+		s = string.sub(s, 1, 180)
+	end
+	return s
+end
+
+function AutoRankRuntimeState.stuckWatchdogSignature(trackedQuest, isHatching)
+	local dq = AutoRankRuntimeState.diagQuest or {}
+	local dt = AutoRankRuntimeState.diagTeleport or {}
+	local df = AutoRankRuntimeState.diagFarm or {}
+	local gen = tostring((trackedQuest and trackedQuest._generatorName) or dq.generator or dq.where or "-")
+	local q = AutoRankRuntimeState.stuckWatchdogQuestSnippet(dq)
+	local tp = tostring(dt.skip or "-")
+	local farm = tostring(df.reasonEmpty or df.inRadius or df.rawTotal or "-")
+	return table.concat({
+		gen,
+		q,
+		tp,
+		"hatchBusy=" .. tostring(hatchBusy),
+		"isHatching=" .. tostring(isHatching == true),
+		"pipeline=" .. tostring(Ticks.hatchEggPipelineInFlight == true),
+		"farm=" .. farm,
+	}, "|")
+end
+
+function AutoRankRuntimeState.stuckWatchdogTick(trackedQuest, isHatching)
+	if cfg().stuckWatchdogEnabled == false or AutoRankRuntimeState.modulesDeferActive() then
+		return
+	end
+	local now = tick()
+	local st = AutoRankRuntimeState.stuckWatchdog
+	if type(st) ~= "table" then
+		st = { signature = nil, since = now, lastActionAt = 0 }
+		AutoRankRuntimeState.stuckWatchdog = st
+	end
+
+	local sig = AutoRankRuntimeState.stuckWatchdogSignature(trackedQuest, isHatching)
+	if st.signature ~= sig then
+		st.signature = sig
+		st.since = now
+		return
+	end
+
+	local timeout = tonumber(cfg().stuckWatchdogTimeoutSec) or 42
+	local age = now - (st.since or now)
+	if age < timeout then
+		return
+	end
+	local minGap = tonumber(cfg().stuckWatchdogMinActionGapSec) or 18
+	if now - (st.lastActionAt or 0) < minGap then
+		return
+	end
+
+	local dt = AutoRankRuntimeState.diagTeleport or {}
+	local sigLower = string.lower(sig)
+	local hatchBlocked = dt.skip == "hatching_or_hatchBusy"
+		or hatchSequenceBlocksWorldTeleport()
+		or hatchAsyncPipelineActive()
+	local hatchLikeObjective = string.find(sigLower, "hatch", 1, true) ~= nil
+		or string.find(sigLower, "egg", 1, true) ~= nil
+
+	if hatchBlocked or hatchLikeObjective then
+		st.lastActionAt = now
+		st.since = now
+		local backoff = math.max(5, tonumber(cfg().stuckWatchdogHatchBackoffSec) or 35)
+		forceClearHatchBusyPipeline("stuck_watchdog", true, string.format("age=%.1f sig=%s", age, sig))
+		Ticks.stuckHatchBackoffUntil = now + backoff
+		Ticks.lastQuestHatchTick = now
+		Ticks.lastProgressOnlyHatchTick = now
+		Ticks.lastTeleportTick = 0
+		local fc = AutoRankRuntimeState.farmCandidateCache
+		if type(fc) == "table" then
+			fc.list = nil
+			fc.diag = nil
+			fc.at = -1e9
+		end
+		trace("stuck_watchdog", "skip_hatch_step", "age=", string.format("%.1f", age), "backoff=", backoff, "sig=", sig)
+	end
+end
+
 function AutoRankRuntimeState.tryAutoClickMessageDialogYes()
 	local pg = LocalPlayer:FindFirstChild("PlayerGui")
 	if not pg then return end
@@ -12128,6 +12219,12 @@ AutoRankRuntimeState.heartbeatConn = RunService.Heartbeat:Connect(function()
 		warnErr("heartbeat", hbErr)
 	end
 	local now = tick()
+	local stuckWatchdogIv = tonumber(cfg().stuckWatchdogIntervalSec) or tonumber(cfg().traceInterval) or 4
+	if stuckWatchdogIv > 0 and now - (Ticks.lastStuckWatchdogTick or 0) >= stuckWatchdogIv then
+		Ticks.lastStuckWatchdogTick = now
+		AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedQuest, isHatching)
+		AutoRankRuntimeState.stuckWatchdogTick(trackedQuest, isHatching)
+	end
 	if cfg().verboseLog and now - Ticks.lastVerbosePulseTick >= (cfg().traceInterval or 4) then
 		Ticks.lastVerbosePulseTick = now
 		AutoRankRuntimeState.refreshTeleportDiagSnapshot(trackedQuest, isHatching)
