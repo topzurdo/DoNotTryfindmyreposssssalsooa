@@ -1132,6 +1132,7 @@ Ticks.lastConsTick = 0
 Ticks.lastConsFailPruneTick = 0
 Ticks.progressOnlyHatchDisabledAt = 0
 Ticks.hatchAsyncGuardUntil = 0
+Ticks.hatchEggPipelineStartedAt = 0
 Ticks.hb = {}
 local hatchBusy = false
 local hatchBusyArmedAt = 0
@@ -1233,6 +1234,7 @@ local function forceClearHatchBusyPipeline(reason, progressOnlyFlag, detail)
 	hatchBusy = false
 	hatchBusyArmedAt = 0
 	Ticks.hatchEggPipelineInFlight = false
+	Ticks.hatchEggPipelineStartedAt = 0
 	Ticks.hatchAsyncGuardUntil = 0
 	if progressOnlyFlag then
 		local sec = tonumber(cfg().progressHatchBackoffOnProximityFailSec) or 18
@@ -1246,12 +1248,6 @@ local function forceClearHatchBusyPipeline(reason, progressOnlyFlag, detail)
 end
 
 local function hatchSequenceBlocksWorldTeleport()
-	if Ticks.hatchEggPipelineInFlight == true then
-		return true
-	end
-	if hatchAsyncPipelineActive() then
-		return true
-	end
 	local oe = false
 	pcall(function()
 		oe = Variables and (
@@ -1259,6 +1255,21 @@ local function hatchSequenceBlocksWorldTeleport()
 			or (type(Variables.OpeningEgg) == "number" and Variables.OpeningEgg > 0)
 		)
 	end)
+
+	if Ticks.hatchEggPipelineInFlight == true then
+		local started = tonumber(Ticks.hatchEggPipelineStartedAt) or 0
+		local maxStale = tonumber(cfg().hatchPipelineInFlightWatchdogSec) or 8
+		if maxStale > 0 and started > 0 and (tick() - started) > maxStale and not hatchAsyncPipelineActive() and oe ~= true then
+			Ticks.hatchEggPipelineInFlight = false
+			Ticks.hatchEggPipelineStartedAt = 0
+			traceThrottled("hatch_pipeline_inflight_watchdog", 8, "hatch", "cleared stale hatchEggPipelineInFlight")
+			return false
+		end
+		return true
+	end
+	if hatchAsyncPipelineActive() then
+		return true
+	end
 	return oe == true
 end
 
@@ -1323,6 +1334,9 @@ function ConnU.disconnectAll()
 	orbNetHooked = false
 	hatchBusy = false
 	hatchBusyArmedAt = 0
+	Ticks.hatchEggPipelineInFlight = false
+	Ticks.hatchEggPipelineStartedAt = 0
+	Ticks.hatchAsyncGuardUntil = 0
 	hatchBusyToken += 1
 end
 
@@ -8898,6 +8912,7 @@ AR.ARC = (function()
 		return
 	end
 	Ticks.hatchEggPipelineInFlight = true
+	Ticks.hatchEggPipelineStartedAt = tick()
 	local pivotDelay = cfg().hatchAfterPivotDelay or 0.38
 	local busyHold = cfg().hatchBusyHoldSeconds or 2.6
 	local guardSec = math.max(tonumber(cfg().hatchAsyncTeleportBlockSeconds) or 18, pivotDelay + 1)
@@ -8910,6 +8925,7 @@ AR.ARC = (function()
 		local okProx, whyProx = HatchAssist.validateNearEgg(eggDir, tracked)
 		if not okProx then
 			Ticks.hatchEggPipelineInFlight = false
+			Ticks.hatchEggPipelineStartedAt = 0
 			local bs = tonumber(cfg().progressHatchBackoffOnProximityFailSec) or 18
 			Ticks.progressHatchProximityBackoffUntil = tick() + math.max(2, bs)
 			if progressOnly then
@@ -9012,6 +9028,7 @@ AR.ARC = (function()
 			end
 		end)
 		Ticks.hatchEggPipelineInFlight = false
+		Ticks.hatchEggPipelineStartedAt = 0
 		if not outerOk then
 			traceThrottled("hatch_pipeline_outer_err", 8, "hatch", outerErr or "outer_fail")
 		end
@@ -10906,7 +10923,11 @@ function AutoRankRuntimeState.emitVerbosePulse(trackedQuest, isHatching)
 		"hatchGuardLeft=",
 		string.format("%.2f", guardLeft),
 		"isHatching=",
-		isHatching
+		isHatching,
+		"pipelineInFlight=",
+		Ticks.hatchEggPipelineInFlight,
+		"pipelineAge=",
+		string.format("%.2f", (Ticks.hatchEggPipelineStartedAt or 0) > 0 and (tick() - Ticks.hatchEggPipelineStartedAt) or 0)
 	)
 	local rb = false
 	pcall(function()
