@@ -1708,6 +1708,14 @@ local function machinePurchaseFailureCooldown(errMsg)
 	return tonumber(cfg().machinePurchaseFailureCooldown) or 6
 end
 
+local function machinePurchaseNeedsPivot(errMsg)
+	local msg = string.lower(tostring(errMsg or ""))
+	return string.find(msg, "too far", 1, true) ~= nil
+		or string.find(msg, "not close", 1, true) ~= nil
+		or string.find(msg, "near", 1, true) ~= nil
+		or string.find(msg, "distance", 1, true) ~= nil
+end
+
 local function tryAutoBuyEggSlots()
 	if not cfg().autoBuyEggSlots or not Network or not CurrencyCmds or not Directory then
 		return
@@ -1741,7 +1749,6 @@ local function tryAutoBuyEggSlots()
 			break
 		end
 		Ticks.lastEggSlotTick = now
-		pivotNearEggSlotsMachine()
 		local invOk = false
 		local errMsg = nil
 		local r, e = AR.Net.invoke("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd)
@@ -1754,6 +1761,20 @@ local function tryAutoBuyEggSlots()
 		else
 			invOk = r ~= false and r ~= nil
 			errMsg = e
+		end
+		if not invOk and machinePurchaseNeedsPivot(errMsg) then
+			pivotNearEggSlotsMachine()
+			r, e = AR.Net.invoke("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd)
+			if type(r) == "string" then
+				errMsg = r
+				invOk = false
+			elseif r == true and type(e) == "string" and e ~= "" then
+				invOk = false
+				errMsg = e
+			else
+				invOk = r ~= false and r ~= nil
+				errMsg = e
+			end
 		end
 		log("EggHatchSlotsMachine_RequestPurchase", bundle.BundleEnd, totalCost, invOk, errMsg)
 		if invOk then
@@ -1823,12 +1844,17 @@ local function tryAutoBuyEquipSlots()
 			end
 		end
 		Ticks.lastEquipSlotTick = now
-		pivotNearEquipSlotsMachine()
 		local invOk = false
 		local errMsg = nil
 		local r, e = AR.Net.invoke("EquipSlotsMachine_RequestPurchase", targetSlot)
 		invOk = r ~= false and r ~= nil
 		errMsg = e
+		if not invOk and machinePurchaseNeedsPivot(errMsg) then
+			pivotNearEquipSlotsMachine()
+			r, e = AR.Net.invoke("EquipSlotsMachine_RequestPurchase", targetSlot)
+			invOk = r ~= false and r ~= nil
+			errMsg = e
+		end
 		log("EquipSlotsMachine_RequestPurchase", targetSlot, invOk, errMsg)
 		if invOk then
 			tryCloseMachineTabIfConfigured()
@@ -10016,6 +10042,53 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 	end
 	local skipEq = cfg().rankStarMachineSkipEquippedPets ~= false
 	local retryInclEq = cfg().rankStarMachineRetryIncludingEquipped ~= false
+	local runId = "pre-fix"
+	local function dbgEmit(hypothesisId, location, message, data)
+		-- #region agent log
+		pcall(function()
+			if type(appendfile) ~= "function" then
+				return
+			end
+			local payload = {
+				sessionId = "7998e7",
+				runId = runId,
+				hypothesisId = hypothesisId,
+				location = location,
+				message = message,
+				data = data or {},
+				timestamp = DateTime.now().UnixTimestampMillis,
+			}
+			local line = nil
+			if HttpService and type(HttpService.JSONEncode) == "function" then
+				line = HttpService:JSONEncode(payload)
+			else
+				line = tostring(payload)
+			end
+			appendfile("debug-7998e7.log", line .. "\n")
+		end)
+		-- #endregion
+	end
+	local bestEggNum, bestEggId = nil, nil
+	pcall(function()
+		if AR.QuestWorldHelpers and type(AR.QuestWorldHelpers.questSpecifiesEggNumber) == "function" then
+			bestEggNum = AR.QuestWorldHelpers.questSpecifiesEggNumber(tracked)
+		end
+		if type(bestEggNum) == "number" and bestEggNum > 0 and EggsUtil and type(EggsUtil.GetByNumber) == "function" then
+			local e = EggsUtil.GetByNumber(bestEggNum)
+			if e and e._id then
+				bestEggId = tostring(e._id)
+			end
+		end
+	end)
+	-- #region agent log
+	dbgEmit("H1", "auto_rank.lua:rankStarMachine:init", "resolved quest best egg target", {
+		wantGold = wantG,
+		wantRainbow = wantR,
+		bestEggNum = bestEggNum,
+		bestEggId = bestEggId,
+		generator = tracked and tracked._generatorName or nil,
+	})
+	-- #endregion
 	local function perkBatch(perkName)
 		local red = 0
 		if MasteryCmds and type(MasteryCmds.HasPerk) == "function" and type(MasteryCmds.GetPerkPower) == "function"
@@ -10156,8 +10229,10 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 		end
 		local perBatch = perkBatch(perkNm)
 		local bestPet, bestBatch = nil, 0
+		local totalSeen, eqSkipped, lowAmtSkipped, canMachineSkipped = 0, 0, 0, 0
 		for uid, pdata in pairs(s.Inventory.Pet) do
 			if type(pdata) == "table" and not pdata._lk then
+				totalSeen += 1
 				if skipEquippedPets ~= true or not petUidIsCurrentlyEquipped(s, uid) then
 					local petObj = nil
 					pcall(function()
@@ -10182,19 +10257,66 @@ function AutoRankRuntimeState.tryRankStarMachinePulse(tracked)
 									bestBatch = batches
 									bestPet = petObj
 								end
+							else
+								canMachineSkipped += 1
 							end
+						else
+							lowAmtSkipped += 1
 						end
 					end
+				else
+					eqSkipped += 1
 				end
 			end
 		end
+		-- #region agent log
+		dbgEmit("H2", "auto_rank.lua:rankStarMachine:scan", "candidate scan stats", {
+			kind = kind,
+			perBatch = perBatch,
+			totalSeen = totalSeen,
+			equippedSkipped = eqSkipped,
+			amountSkipped = lowAmtSkipped,
+			canMachineSkipped = canMachineSkipped,
+			selectedBatches = bestBatch,
+			bestEggId = bestEggId,
+		})
+		-- #endregion
 		if not bestPet or bestBatch < 1 then
+			-- #region agent log
+			dbgEmit("H3", "auto_rank.lua:rankStarMachine:noCandidate", "no machine candidate selected", {
+				kind = kind,
+				skipEquipped = skipEquippedPets == true,
+				bestEggId = bestEggId,
+			})
+			-- #endregion
 			return false
 		end
 		local petUidInvoke = nil
+		local petSaveId, fromEgg = nil, nil
 		pcall(function()
 			petUidInvoke = bestPet:GetUID()
 		end)
+		if type(petUidInvoke) == "string" then
+			local p = s.Inventory.Pet[petUidInvoke]
+			if type(p) == "table" and type(p.id) == "string" then
+				petSaveId = p.id
+				local d = Directory and Directory.Pets and Directory.Pets[petSaveId]
+				if type(d) == "table" and type(d.fromEgg) == "string" then
+					fromEgg = d.fromEgg
+				end
+			end
+		end
+		-- #region agent log
+		dbgEmit("H4", "auto_rank.lua:rankStarMachine:pick", "selected pet before invoke", {
+			kind = kind,
+			uid = petUidInvoke,
+			petId = petSaveId,
+			fromEgg = fromEgg,
+			bestEggId = bestEggId,
+			bestEggNum = bestEggNum,
+			batches = bestBatch,
+		})
+		-- #endregion
 		if type(petUidInvoke) ~= "string" then
 			return false
 		end

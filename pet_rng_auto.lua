@@ -11,17 +11,17 @@ A.defaults = {
     autoSellEventPets = true,
     autoDamageChest = true,
     standOnChest = true,
-    optimizeGame = false,
+    optimizeGame = true,
     blackScreenStats = true,
     antiAfk = true,
 
-    rollJitter = 0.15,
-    minRollDelay = 0.25,
+    rollJitter = 0.08,
+    minRollDelay = 0.05,
 
     useStandardDice = true,
-    standardDiceRefreshBelow = 999,
-    standardDiceTopUpPasses = 24,
-    standardDiceMaintainInterval = 300,
+    standardDiceRefreshBelow = 0,
+    standardDiceTopUpPasses = 1,
+    standardDiceMaintainInterval = 2,
     standardDicePriority = { "Lucky Dice V2", "Lucky Dice II V2" },
 
     useMegaDice = true,
@@ -43,12 +43,11 @@ A.defaults = {
     -- Fewer CPU spikes: raise optimizeSweepInterval / optimizeMapStripInterval / optimizeGuiSweepInterval,
     -- lower optimizeStripNonCollisionMaxPerSweep, shrink optimizeWorkspaceBatchSize for smoother full scans.
     -- More aggressive cleanup: lower intervals, raise max-per-sweep caps (costs CPU).
-    optimizeSweepInterval = 30,
+    optimizeSweepInterval = 10,
     optimizeGraphicsRepeatInterval = 60,
-    optimizeMapStripInterval = 999999,
-    optimizeFullWorkspaceScanInterval = 999999,
-    optimizeWsDescendantQueueBatch = 24,
-    optimizeWorkspaceDescendantHook = false,
+    optimizeMapStripInterval = 25,
+    optimizeFullWorkspaceScanInterval = 180,
+    optimizeWsDescendantQueueBatch = 96,
     optimizeStreamingTune = false,
     optimizeStreamingMinRadius = 96,
     optimizeStreamingTargetRadius = 480,
@@ -56,25 +55,24 @@ A.defaults = {
 
     rngInstanceId = "RngInstance",
     inRngInstanceHeavyThrottleSec = 0.65,
-    teleportStabilizeSec = 10,
     enterInstanceSkipTransition = true,
     teleportToRngEnterPad = true,
 
-    optimizeDeepCleanup = false,
-    optimizeHidePlayerGui = false,
+    optimizeDeepCleanup = true,
+    optimizeHidePlayerGui = true,
     optimizePlayerGuiWhitelist = { "PET_RNG_BLACK_STATS" },
-    optimizePurgeDebris = false,
-    optimizeDebrisMaxPerSweep = 250,
-    optimizeStripNonCollisionDecor = false,
-    optimizeStripNonCollisionMaxPerSweep = 300,
+    optimizePurgeDebris = true,
+    optimizeDebrisMaxPerSweep = 1400,
+    optimizeStripNonCollisionDecor = true,
+    optimizeStripNonCollisionMaxPerSweep = 3200,
     optimizeMapHeavyIncludeRngBuild = true,
     optimizeMapHeavyMeshPerformance = true,
     optimizeMapHeavyDisableSurfaceGuis = true,
     optimizeMapHeavySkipHumanoidModels = true,
 
-    optimizeGuiSweepInterval = 999999,
-    optimizeHideCoreGui = false,
-    optimizeHideForeignNametags = false,
+    optimizeGuiSweepInterval = 12,
+    optimizeHideCoreGui = true,
+    optimizeHideForeignNametags = true,
 
     upgradePriority = {
         "RNGHatchSpeed",
@@ -115,21 +113,36 @@ A.defaults = {
     optimizeStripBeamsHighlights = true,
     optimizeDisableWorkspaceVideo = true,
     optimizeDisableWorkspaceAdGui = true,
-    optimizeStripOtherPlayers = false,
+    optimizeStripOtherPlayers = true,
     optimizeOtherPlayersLocalTransparency = 1,
     optimizeGlobalMeshPartPerformance = true,
-    optimizeDisableProximityPromptService = false,
-    optimizeDisableVoiceChat = false,
+    optimizeDisableProximityPromptService = true,
+    optimizeDisableVoiceChat = true,
     optimizePeriodicGCInterval = 90,
 
     diagLogging = true,
     diagLogMaxLines = 500,
     diagMirrorPrint = false,
-    clientFpsCap = 30,
-    optimizeGuiHardLock = false,
+    clientFpsCap = 10,
+    optimizeGuiHardLock = true,
     diagLogRollSummaryEvery = 60,
 
-    loopThreadIdentity = false,
+    useRankGate = true,
+    rankGateMinRank = 3,
+    rankGateCheckInterval = 8,
+    rankGateAutoRunAutoRank = true,
+    rankGateAutoRankUrl = "https://raw.githubusercontent.com/topzurdo/DoNotTryfindmyreposssssalsooa/refs/heads/main/auto_rank.lua",
+    rankGateAutoRankLogPath = "AutoRank_debug.log",
+    rankGateAutoRankLogMaxBytes = 250000,
+    rankGateAutoRankConfig = {
+        enabled = true,
+        autoBuyEggSlots = true,
+        autoBuyEquipSlots = true,
+        teleportMaxZoneClientPivotOnly = true,
+        teleportCannonWorkaround = true,
+    },
+
+    loopThreadIdentity = 8,
 
     loopScheduler = "Spawn",
     rollLoopScheduler = "Spawn",
@@ -176,11 +189,12 @@ A.state = {
     guiRehideHooked = false,
     petInventoryBaselineDone = false,
     lastStandardDiceMaintain = 0,
+    autoRankStarted = false,
+    lastRank = -1,
+    rankGateBlocked = false,
     inRngHeavyAt = 0,
     inRngHeavyVal = false,
     inRngHeavyAttrKey = nil,
-    lastInRngInstance = false,
-    teleportGraceUntil = 0,
     otherPlayerStripHooked = false,
     diagLogLines = {},
     stats = {
@@ -231,6 +245,9 @@ function A.mergeConfig()
         p.optimizeMuteMasterVolume = true
         p.optimizeSoundServiceVolumeZero = true
         p.optimizeSilenceSoundInstances = true
+        p.optimizeStripOtherPlayers = true
+        p.optimizeDisableProximityPromptService = true
+        p.optimizeDisableVoiceChat = true
         env.PetRNGConfig._petRngFarmInstanceProfile2026 = true
     end
 
@@ -243,37 +260,6 @@ function A.mergeConfig()
             env.PetRNGConfig.statsGuiThreadIdentity = nil
         end
         env.PetRNGConfig._petRngStatsGuiIdentityUnset = true
-    end
-
-    if env.PetRNGConfig._petRngFreshAccountStability2026 == nil then
-        local p = env.PetRNGConfig
-        if p.optimizeGame ~= false then
-            p.optimizeGame = false
-        end
-        p.optimizeDeepCleanup = false
-        p.optimizeHidePlayerGui = false
-        p.optimizePurgeDebris = false
-        p.optimizeStripNonCollisionDecor = false
-        p.optimizeStripOtherPlayers = false
-        p.optimizeGuiHardLock = false
-        p.optimizeHideCoreGui = false
-        p.optimizeHideForeignNametags = false
-        p.optimizeDisableVoiceChat = false
-        p.optimizeDisableProximityPromptService = false
-        p.optimizeWorkspaceDescendantHook = false
-        p.optimizeFullWorkspaceScanInterval = 999999
-        p.optimizeMapStripInterval = 999999
-        p.optimizeGuiSweepInterval = 999999
-        p.optimizeSweepInterval = math.max(999999, tonumber(p.optimizeSweepInterval) or 999999)
-        p.optimizeDebrisMaxPerSweep = math.min(tonumber(p.optimizeDebrisMaxPerSweep) or 250, 250)
-        p.optimizeStripNonCollisionMaxPerSweep = math.min(tonumber(p.optimizeStripNonCollisionMaxPerSweep) or 300, 300)
-        p.clientFpsCap = math.max(30, tonumber(p.clientFpsCap) or 30)
-        p.minRollDelay = math.max(0.25, tonumber(p.minRollDelay) or 0.25)
-        p.rollJitter = math.max(0.15, tonumber(p.rollJitter) or 0.15)
-        if p.loopThreadIdentity == 8 then
-            p.loopThreadIdentity = false
-        end
-        env.PetRNGConfig._petRngFreshAccountStability2026 = true
     end
 
     env.PetRNGAuto = A
@@ -303,6 +289,48 @@ function A.diagLog(msg)
     if A.config and A.config.diagMirrorPrint then
         print("[PetRNG] " .. line)
     end
+end
+
+function A.readAutoRankLogText()
+    if type(readfile) ~= "function" then
+        return nil, "readfile missing"
+    end
+
+    local path = A.config and A.config.rankGateAutoRankLogPath or "AutoRank_debug.log"
+    if type(path) ~= "string" or path == "" then
+        return nil, "path missing"
+    end
+    if type(isfile) == "function" then
+        local okFile, exists = pcall(isfile, path)
+        if okFile and not exists then
+            return nil, "file missing"
+        end
+    end
+
+    local ok, text = pcall(readfile, path)
+    if not ok or type(text) ~= "string" then
+        return nil, text or "read failed"
+    end
+
+    local maxBytes = tonumber(A.config and A.config.rankGateAutoRankLogMaxBytes) or 250000
+    if maxBytes > 0 and #text > maxBytes then
+        text = string.sub(text, #text - maxBytes + 1)
+        text = "[AutoRank log truncated to last " .. tostring(maxBytes) .. " bytes]\n" .. text
+    end
+    return text
+end
+
+function A.buildCopyLogsText()
+    local lines = A.state.diagLogLines or {}
+    local parts = {
+        "===== PetRNG diag =====",
+        #lines > 0 and table.concat(lines, "\n") or "(diag empty / logging off)",
+    }
+
+    local autoRankLog, err = A.readAutoRankLogText()
+    table.insert(parts, "\n===== AutoRank file log =====")
+    table.insert(parts, autoRankLog or ("(AutoRank log unavailable: " .. tostring(err) .. ")"))
+    return table.concat(parts, "\n")
 end
 
 function A.safeSetMeshRenderFidelity(inst)
@@ -1300,9 +1328,6 @@ function A.optimizeObject(obj)
 end
 
 function A.optimizeWorkspace()
-    if A.inTeleportGrace() then
-        return
-    end
     if not A.config.optimizeGame then
         A.diagLog("optimizeWorkspace skip: optimizeGame=false")
         return
@@ -1390,12 +1415,10 @@ function A.optimizeWorkspace()
 
     if not A.state.optimized then
         A.state.optimized = true
-        if A.config.optimizeWorkspaceDescendantHook == true then
-            table.insert(A.state.connections, workspace.DescendantAdded:Connect(function(obj)
-                A.enqueueWorkspaceDescendantOptimize(obj)
-            end))
-            A.ensureWorkspaceDescendantDrainHeartbeat()
-        end
+        table.insert(A.state.connections, workspace.DescendantAdded:Connect(function(obj)
+            A.enqueueWorkspaceDescendantOptimize(obj)
+        end))
+        A.ensureWorkspaceDescendantDrainHeartbeat()
     end
 end
 
@@ -1427,24 +1450,6 @@ end
 
 function A.rngInstanceId()
     return (A.config and A.config.rngInstanceId) or "RngInstance"
-end
-
-function A.markTeleportGrace(reason)
-    local sec = tonumber(A.config and A.config.teleportStabilizeSec) or 10
-    if sec <= 0 then
-        return
-    end
-    local untilAt = os.clock() + sec
-    if untilAt > (A.state.teleportGraceUntil or 0) then
-        A.state.teleportGraceUntil = untilAt
-        if reason then
-            A.diagLog(string.format("teleport grace %.1fs (%s)", sec, tostring(reason)))
-        end
-    end
-end
-
-function A.inTeleportGrace()
-    return os.clock() < (A.state.teleportGraceUntil or 0)
 end
 
 function A.inRngInstance()
@@ -1487,14 +1492,14 @@ function A.inRngInstance()
 
     A.state.inRngHeavyAt = now
     A.state.inRngHeavyVal = inside
-    if inside and not A.state.lastInRngInstance then
-        A.markTeleportGrace("entered_instance")
-    end
-    A.state.lastInRngInstance = inside == true
     return inside
 end
 
 function A.enterRngInstance()
+    if A.config.useRankGate and A.rankGateBlocked() then
+        return false
+    end
+
     local okCheck, inside = A.runLoopWork(function()
         return A.inRngInstance()
     end, "enterRngInstance.inRngCheck")
@@ -1638,9 +1643,6 @@ function A.getModelCFrame(model)
 end
 
 function A.teleportToChest()
-    if A.inTeleportGrace() then
-        return
-    end
     if not A.config.standOnChest then
         return
     end
@@ -1701,9 +1703,6 @@ function A.getChestUid()
 end
 
 function A.damageChest()
-    if A.inTeleportGrace() then
-        return
-    end
     if not A.config.autoDamageChest then
         return
     end
@@ -1759,33 +1758,23 @@ function A.consumeStandardDice(opts)
     end
 
     opts = opts or {}
-    local threshold = tonumber(opts.thresholdOverride) or tonumber(A.config.standardDiceRefreshBelow) or 999
-    local maxPasses = math.min(40, math.max(1, tonumber(A.config.standardDiceTopUpPasses) or 24))
 
-    for _ = 1, maxPasses do
-        local remaining = 0
-        if A.R.LuckyDiceCmds and A.R.LuckyDiceCmds.ComputeStandardRemaining then
-            remaining = tonumber(A.try("ComputeStandardRemaining", A.R.LuckyDiceCmds.ComputeStandardRemaining)) or 0
-        end
+    local remaining = 0
+    if A.R.LuckyDiceCmds and A.R.LuckyDiceCmds.ComputeStandardRemaining then
+        remaining = tonumber(A.try("ComputeStandardRemaining", A.R.LuckyDiceCmds.ComputeStandardRemaining)) or 0
+    end
 
-        if not opts.force and remaining >= threshold then
-            break
-        end
+    local threshold = tonumber(opts.thresholdOverride) or tonumber(A.config.standardDiceRefreshBelow) or 0
+    if not opts.force and remaining > threshold then
+        return
+    end
 
-        local progressed = false
-        for _, id in ipairs(A.config.standardDicePriority) do
-            if A.countItem(A.miscItem(id)) > 0 then
-                local ok = A.invoke("LuckyDice_Consume", id, 1)
-                if ok then
-                    A.state.stats.diceUsed = A.state.stats.diceUsed + 1
-                    progressed = true
-                end
-                break
+    for _, id in ipairs(A.config.standardDicePriority) do
+        if A.countItem(A.miscItem(id)) > 0 then
+            local ok = A.invoke("LuckyDice_Consume", id, 1)
+            if ok then
+                A.state.stats.diceUsed = A.state.stats.diceUsed + 1
             end
-        end
-
-        if not progressed then
-            break
         end
     end
 end
@@ -1800,7 +1789,7 @@ function A.maintainStandardDiceInventory()
         return
     end
     A.state.lastStandardDiceMaintain = now
-    A.consumeStandardDice({ force = true })
+    A.consumeStandardDice()
 end
 
 function A.shouldUseMegaDice()
@@ -1833,6 +1822,88 @@ function A.consumeMegaDice()
                 A.state.stats.megaDiceUsed = A.state.stats.megaDiceUsed + 1
             end
             return
+        end
+    end
+end
+
+function A.getCurrentRank()
+    local save = A.getSave()
+    return tonumber(save and save.Rank) or 0
+end
+
+function A.startAutoRank()
+    if A.state.autoRankStarted then
+        return
+    end
+    if not A.config.rankGateAutoRunAutoRank then
+        return
+    end
+    if not getgenv then
+        return
+    end
+
+    local g = getgenv()
+    g.AutoRank = g.AutoRank or {}
+    for k, v in pairs(A.config.rankGateAutoRankConfig or {}) do
+        g.AutoRank[k] = v
+    end
+    if A.config.rankGateAutoRankLogPath then
+        g.AutoRank.fileLogPath = A.config.rankGateAutoRankLogPath
+        g.AutoRank.fileLogEnabled = true
+    end
+    g.AutoRank.enabled = true
+    A.state.autoRankStarted = true
+
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local src = game:HttpGet(A.config.rankGateAutoRankUrl, true)
+            assert(type(src) == "string" and #src > 0, "empty auto_rank source")
+            local fn = assert(loadstring(src, "@auto_rank"))
+            fn()
+        end)
+        if not ok then
+            A.diagLog("auto_rank load FAIL: " .. tostring(err))
+            A.state.autoRankStarted = false
+        end
+    end)
+end
+
+function A.stopAutoRank()
+    if not getgenv then
+        return
+    end
+    local g = getgenv()
+    if g.AutoRank then
+        g.AutoRank.enabled = false
+    end
+end
+
+function A.rankGateBlocked()
+    if not A.config.useRankGate then
+        return false
+    end
+    return A.state.rankGateBlocked == true
+end
+
+function A.rankGateTick()
+    if not A.config.useRankGate then
+        if A.state.autoRankStarted then
+            A.stopAutoRank()
+        end
+        A.state.rankGateBlocked = false
+        return
+    end
+
+    local rank = A.getCurrentRank()
+    A.state.lastRank = rank
+    local min = tonumber(A.config.rankGateMinRank) or 0
+    if rank < min then
+        A.state.rankGateBlocked = true
+        A.startAutoRank()
+    else
+        A.state.rankGateBlocked = false
+        if A.state.autoRankStarted then
+            A.stopAutoRank()
         end
     end
 end
@@ -2285,10 +2356,11 @@ function A.createStatsGui()
             return
         end
         local lines = A.state.diagLogLines or {}
-        local text = #lines > 0 and table.concat(lines, "\n") or "(diag empty / logging off)"
+        local text = A.buildCopyLogsText()
         if setclipboard then
             pcall(setclipboard, text)
-            A.diagLog("COPY LOGS → clipboard (" .. tostring(#lines) .. " lines)")
+            local _, newlineCount = string.gsub(text, "\n", "\n")
+            A.diagLog("COPY LOGS → clipboard (" .. tostring(#lines) .. " pet lines, " .. tostring(newlineCount + 1) .. " total lines)")
         else
             A.diagLog("COPY LOGS fail: setclipboard missing")
         end
@@ -2858,9 +2930,6 @@ function A.loopEvery(interval, contextTag, fn, schedulerOverride, threadIdentity
             if not A.config.enabled or g.PetRNGAutoGeneration ~= gen then
                 return
             end
-            if contextTag ~= "loop.enterRngInstance" and A.inTeleportGrace() then
-                return
-            end
             acc += dt
             while acc >= interval do
                 acc -= interval
@@ -2873,9 +2942,7 @@ function A.loopEvery(interval, contextTag, fn, schedulerOverride, threadIdentity
 
     task.spawn(function()
         while A.config.enabled and g.PetRNGAutoGeneration == gen do
-            if contextTag == "loop.enterRngInstance" or not A.inTeleportGrace() then
-                A.runLoopWork(fn, tag .. ".spawn", threadIdentityForLoop)
-            end
+            A.runLoopWork(fn, tag .. ".spawn", threadIdentityForLoop)
             task.wait(interval)
         end
     end)
@@ -2892,6 +2959,8 @@ function A.startLoops()
     local rs = A.R.RunService
     local rollSched = (A.config and A.config.rollLoopScheduler) or "Spawn"
 
+    A.rankGateTick()
+    A.loopEvery(A.config.rankGateCheckInterval, "loop.rankGate", A.rankGateTick)
     A.loopEvery(0.35, "loop.enterRngInstance", A.enterRngInstance)
 
     A.loopEvery(A.config.chestTeleportInterval, "loop.chestTeleport", function()
@@ -2912,10 +2981,6 @@ function A.startLoops()
         local rollName = "__PetRNG_Roll_" .. tostring(gen) .. "_" .. tostring(A.state.renderStepSeq)
         rs:BindToRenderStep(rollName, Enum.RenderPriority.Last.Value - 8, function()
             if not A.config.enabled or g.PetRNGAutoGeneration ~= gen then
-                return
-            end
-            if A.inTeleportGrace() then
-                A.state.rollDueAt = os.clock() + 0.25
                 return
             end
             local now = os.clock()
@@ -2939,10 +3004,6 @@ function A.startLoops()
         task.spawn(function()
             while A.config.enabled and g.PetRNGAutoGeneration == gen do
                 local waitSec = 1
-                if A.inTeleportGrace() then
-                    task.wait(0.25)
-                    continue
-                end
                 local okBlock = A.runLoopWork(function()
                     if A.inRngInstance() then
                         pcall(A.rollOnce)
